@@ -11,22 +11,17 @@ documentation = "https://docs.rs/egui-ash"
 repository = "https://github.com/MatchaChoco010/egui-ash"
 categories = ["gui"]
 keywords = ["gui", "egui", "ash", "vulkan", "winit"]
-include = [
-  "/LICENSE-*",
-  "/src/*.rs",
-  "/src/shaders/spv/*.spv",
-  "/Cargo.toml",
-]
+include = ["/LICENSE-*", "/src/*.rs", "/src/shaders/spv/*.spv", "/Cargo.toml"]
 
 [features]
 default = ["egui-winit/default"]
-gpu-allocator = [ "dep:gpu-allocator" ]
+gpu-allocator = ["dep:gpu-allocator"]
 persistence = [
-  "egui/persistence",
-  "egui-winit/serde",
-  "directories-next",
-  "dep:serde",
-  "ron",
+    "egui/persistence",
+    "egui-winit/serde",
+    "directories-next",
+    "dep:serde",
+    "ron",
 ]
 
 ## Underlying egui-winit features
@@ -43,24 +38,33 @@ x11 = ["egui-winit/x11"]
 
 [dependencies]
 anyhow = "1.0.75"
-ash = { version = "0.37.3", default-features = false }
-ash-window = "0.12.0"
+ash = { version = "0.38.0", default-features = false }
+ash-window = "0.13.0"
 bytemuck = "1.14.0"
 directories-next = { version = "2.0.0", optional = true }
-egui = "0.25.0"
-egui-winit = "0.25.0"
-gpu-allocator = { version = "0.25.0", default-features = false, features = ["vulkan"], optional = true }
+egui = "0.27.2"
+egui-winit = "0.27.2"
+gpu-allocator = { git = "https://github.com/Traverse-Research/gpu-allocator.git", default-features = false, features = [
+    "vulkan",
+], optional = true }
 log = "0.4.20"
-raw-window-handle = "0.5"
+raw-window-handle = "0.6"
 ron = { version = "0.8.1", optional = true }
-serde = { version = "1.0.193", optional = true }
+serde = { version = "1.0.197", optional = true }
 
 [dev-dependencies]
-ash = { version = "0.37.3", default-features = false, features = ["linked", "debug"] }
-egui_extras = { version = "0.25.0", features = ["all_loaders"] }
+ash = { version = "0.38.0", default-features = false, features = [
+    "linked",
+    "debug",
+] }
+egui_extras = { version = "0.27.2", features = ["all_loaders"] }
 egui-ash = { path = ".", features = ["gpu-allocator", "persistence"] }
-egui_tiles = "0.6.0"
-glam = "0.25.0"
-image = { version = "0.24.7", default-features = false, features = ["png", "jpeg", "bmp"] }
+egui_tiles = "0.8.0"
+glam = "0.28.0"
+image = { version = "0.25.1", default-features = false, features = [
+    "png",
+    "jpeg",
+    "bmp",
+] }
 log = "0.4.20"
 tobj = "4.0.0"

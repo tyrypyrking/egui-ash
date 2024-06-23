@@ -1,10 +1,10 @@
 use anyhow::Result;
 use ash::{
-    extensions::khr::{Surface, Swapchain},
-    vk, Device, Entry, Instance,
+    khr::surface::Instance as Surface, khr::swapchain::Device as Swapchain, vk, Device, Entry,
+    Instance,
 };
 use egui_winit::winit;
-use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::collections::HashMap;
 
 use crate::renderer::{EguiCommand, SwapchainUpdateInfo};
@@ -94,7 +94,7 @@ impl Presenter {
         };
 
         // create swapchain
-        let swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
+        let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(surface)
             .min_image_count(image_count)
             .image_color_space(surface_format.color_space)
@@ -125,7 +125,7 @@ impl Presenter {
         command_pool: vk::CommandPool,
         len: u32,
     ) -> Result<Vec<vk::CommandBuffer>> {
-        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::builder()
+        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(len);
@@ -140,7 +140,7 @@ impl Presenter {
     ) -> Result<(Vec<vk::Fence>, Vec<vk::Semaphore>, Vec<vk::Semaphore>)> {
         // create fences
         let fence_create_info =
-            vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
+            vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
         let mut in_flight_fences = vec![];
         for _ in 0..len {
             let fence = unsafe { device.create_fence(&fence_create_info, None)? };
@@ -150,13 +150,13 @@ impl Presenter {
         // create semaphores
         let mut image_available_semaphores = vec![];
         for _ in 0..len {
-            let semaphore_create_info = vk::SemaphoreCreateInfo::builder();
+            let semaphore_create_info = vk::SemaphoreCreateInfo::default();
             let semaphore = unsafe { device.create_semaphore(&semaphore_create_info, None)? };
             image_available_semaphores.push(semaphore);
         }
         let mut render_finished_semaphores = vec![];
         for _ in 0..len {
-            let semaphore_create_info = vk::SemaphoreCreateInfo::builder();
+            let semaphore_create_info = vk::SemaphoreCreateInfo::default();
             let semaphore = unsafe { device.create_semaphore(&semaphore_create_info, None)? };
             render_finished_semaphores.push(semaphore);
         }
@@ -193,8 +193,14 @@ impl Presenter {
             ash_window::create_surface(
                 entry,
                 instance,
-                window.raw_display_handle(),
-                window.raw_window_handle(),
+                window
+                    .display_handle()
+                    .expect("Failed to get display handle")
+                    .as_raw(),
+                window
+                    .window_handle()
+                    .expect("Failed to get window handle")
+                    .as_raw(),
                 None,
             )
             .expect("Failed to create surface")
@@ -352,13 +358,12 @@ impl Presenter {
             vk::ImageLayout::GENERAL,
             vk::PipelineStageFlags::ALL_GRAPHICS,
             vk::PipelineStageFlags::ALL_GRAPHICS,
-            vk::ImageSubresourceRange::builder()
+            vk::ImageSubresourceRange::default()
                 .aspect_mask(vk::ImageAspectFlags::COLOR)
                 .base_array_layer(0u32)
                 .layer_count(1u32)
                 .base_mip_level(0u32)
-                .level_count(1u32)
-                .build(),
+                .level_count(1u32),
         );
         unsafe {
             device.cmd_clear_color_image(
@@ -367,7 +372,7 @@ impl Presenter {
                 vk::ImageLayout::GENERAL,
                 &vk::ClearColorValue { float32: color },
                 std::slice::from_ref(
-                    &vk::ImageSubresourceRange::builder()
+                    &vk::ImageSubresourceRange::default()
                         .aspect_mask(vk::ImageAspectFlags::COLOR)
                         .base_array_layer(0u32)
                         .layer_count(1u32)
@@ -388,13 +393,12 @@ impl Presenter {
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             vk::PipelineStageFlags::ALL_GRAPHICS,
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            vk::ImageSubresourceRange::builder()
+            vk::ImageSubresourceRange::default()
                 .aspect_mask(vk::ImageAspectFlags::COLOR)
                 .base_array_layer(0u32)
                 .layer_count(1u32)
                 .base_mip_level(0u32)
-                .level_count(1u32)
-                .build(),
+                .level_count(1u32),
         );
     }
 
@@ -448,7 +452,7 @@ impl Presenter {
         }
 
         // begin command buffer
-        let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder()
+        let command_buffer_begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         unsafe {
             device.begin_command_buffer(
@@ -486,7 +490,7 @@ impl Presenter {
 
         // submit command buffer
         let buffers_to_submit = [self.render_command_buffers[self.current_frame]];
-        let submit_info = vk::SubmitInfo::builder()
+        let submit_info = vk::SubmitInfo::default()
             .command_buffers(&buffers_to_submit)
             .wait_semaphores(std::slice::from_ref(
                 &self.image_available_semaphores[self.current_frame],
@@ -505,7 +509,7 @@ impl Presenter {
 
         // present swapchain image
         let image_indices = [index as u32];
-        let present_info = vk::PresentInfoKHR::builder()
+        let present_info = vk::PresentInfoKHR::default()
             .wait_semaphores(std::slice::from_ref(
                 &self.render_finished_semaphores[self.current_frame],
             ))

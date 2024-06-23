@@ -1,8 +1,6 @@
 use ash::{
-    extensions::{
-        ext::DebugUtils,
-        khr::{Surface, Swapchain},
-    },
+    ext::debug_utils,
+    khr::{surface, swapchain},
     vk, Device, Entry, Instance,
 };
 use egui_ash::{
@@ -25,11 +23,11 @@ struct MyApp {
     entry: Arc<Entry>,
     instance: Arc<Instance>,
     device: Arc<Device>,
-    debug_utils_loader: DebugUtils,
+    debug_utils_loader: debug_utils::Instance,
     debug_messenger: vk::DebugUtilsMessengerEXT,
     physical_device: vk::PhysicalDevice,
-    surface_loader: Arc<Surface>,
-    swapchain_loader: Arc<Swapchain>,
+    surface_loader: Arc<surface::Instance>,
+    swapchain_loader: Arc<swapchain::Device>,
 
     triangle_surface: vk::SurfaceKHR,
     model_surface: Option<vk::SurfaceKHR>,

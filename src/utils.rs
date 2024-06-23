@@ -15,7 +15,7 @@ pub(crate) fn insert_image_memory_barrier(
     dst_stage_mask: ash::vk::PipelineStageFlags,
     subresource_range: ash::vk::ImageSubresourceRange,
 ) {
-    let image_memory_barrier = ash::vk::ImageMemoryBarrier::builder()
+    let image_memory_barrier = ash::vk::ImageMemoryBarrier::default()
         .src_queue_family_index(src_q_family_index)
         .dst_queue_family_index(dst_q_family_index)
         .src_access_mask(src_access_mask)
@@ -23,8 +23,7 @@ pub(crate) fn insert_image_memory_barrier(
         .old_layout(old_image_layout)
         .new_layout(new_image_layout)
         .image(*image)
-        .subresource_range(subresource_range)
-        .build();
+        .subresource_range(subresource_range);
     unsafe {
         device.cmd_pipeline_barrier(
             *cmd,

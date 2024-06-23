@@ -1,6 +1,5 @@
-use ash::extensions::khr::Swapchain;
 use egui_winit::winit::{self, event_loop::EventLoopBuilder};
-use raw_window_handle::HasRawDisplayHandle;
+use raw_window_handle::HasDisplayHandle;
 use std::{
     ffi::CStr,
     mem::ManuallyDrop,
@@ -77,7 +76,7 @@ pub fn run<C: AppCreator<A> + 'static, A: Allocator + 'static>(
 ) -> ExitCode {
     let app_id = app_id.into();
 
-    let device_extensions = [Swapchain::name().to_owned()];
+    let device_extensions = [ash::khr::swapchain::NAME.to_owned()];
 
     let event_loop = EventLoopBuilder::<IntegrationEvent>::with_user_event()
         .build()
@@ -142,8 +141,13 @@ pub fn run<C: AppCreator<A> + 'static, A: Allocator + 'static>(
             .unwrap()
     };
 
-    let instance_extensions =
-        ash_window::enumerate_required_extensions(event_loop.raw_display_handle()).unwrap();
+    let instance_extensions = ash_window::enumerate_required_extensions(
+        event_loop
+            .display_handle()
+            .expect("Error getting display handle")
+            .as_raw(),
+    )
+    .unwrap();
     let instance_extensions = instance_extensions
         .into_iter()
         .map(|&ext| unsafe { CStr::from_ptr(ext).to_owned() })

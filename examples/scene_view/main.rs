@@ -1,7 +1,4 @@
-use ash::{
-    extensions::{ext::DebugUtils, khr::Surface},
-    vk, Device, Entry, Instance,
-};
+use ash::{ext::debug_utils, khr::surface, vk, Device, Entry, Instance};
 use egui_ash::{App, AppCreator, AshRenderState, CreationContext, HandleRedraw, RunOption};
 use gpu_allocator::vulkan::*;
 use std::{
@@ -19,9 +16,9 @@ struct MyApp {
     _entry: Arc<Entry>,
     instance: Arc<Instance>,
     device: Arc<Device>,
-    debug_utils_loader: DebugUtils,
+    debug_utils_loader: debug_utils::Instance,
     debug_messenger: vk::DebugUtilsMessengerEXT,
-    surface_loader: Arc<Surface>,
+    surface_loader: Arc<surface::Instance>,
     surface: vk::SurfaceKHR,
     command_pool: vk::CommandPool,
     allocator: ManuallyDrop<Arc<Mutex<Allocator>>>,

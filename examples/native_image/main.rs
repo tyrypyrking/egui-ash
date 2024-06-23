@@ -1,15 +1,11 @@
 use ash::{
-    extensions::{
-        ext::DebugUtils,
-        khr::{Surface, Swapchain},
-    },
+    ext::debug_utils,
+    khr::{surface, swapchain},
     vk, Device, Entry, Instance,
 };
-use egui_ash::{
-    raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle},
-    winit, App, AppCreator, AshRenderState, CreationContext, RunOption, Theme,
-};
+use egui_ash::{winit, App, AppCreator, AshRenderState, CreationContext, RunOption, Theme};
 use gpu_allocator::vulkan::*;
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::{
     collections::HashSet,
     ffi::CString,
@@ -21,11 +17,11 @@ struct MyApp {
     entry: Entry,
     instance: Instance,
     device: Device,
-    debug_utils_loader: DebugUtils,
+    debug_utils_loader: debug_utils::Instance,
     debug_messenger: vk::DebugUtilsMessengerEXT,
     physical_device: vk::PhysicalDevice,
-    surface_loader: Surface,
-    swapchain_loader: Swapchain,
+    surface_loader: surface::Instance,
+    swapchain_loader: swapchain::Device,
     surface: vk::SurfaceKHR,
     queue: vk::Queue,
     command_pool: vk::CommandPool,
@@ -125,8 +121,8 @@ impl MyAppCreator {
     fn create_instance(
         required_instance_extensions: &[CString],
         entry: &Entry,
-    ) -> (Instance, DebugUtils, vk::DebugUtilsMessengerEXT) {
-        let mut debug_utils_messenger_create_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
+    ) -> (Instance, debug_utils::Instance, vk::DebugUtilsMessengerEXT) {
+        let mut debug_utils_messenger_create_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
             .flags(vk::DebugUtilsMessengerCreateFlagsEXT::empty())
             .message_severity(
                 vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
@@ -139,15 +135,14 @@ impl MyAppCreator {
                     | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
                     | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
             )
-            .pfn_user_callback(Some(Self::vulkan_debug_utils_callback))
-            .build();
+            .pfn_user_callback(Some(Self::vulkan_debug_utils_callback));
 
         let app_name = std::ffi::CString::new("egui-ash example simple").unwrap();
-        let app_info = vk::ApplicationInfo::builder()
+        let app_info = vk::ApplicationInfo::default()
             .application_name(&app_name)
             .application_version(vk::make_api_version(1, 0, 0, 0))
             .api_version(vk::API_VERSION_1_0);
-        let mut extension_names = vec![DebugUtils::name().as_ptr()];
+        let mut extension_names = vec![debug_utils::NAME.as_ptr()];
         for ext in required_instance_extensions {
             let name = ext.as_ptr();
             extension_names.push(name);
@@ -160,7 +155,7 @@ impl MyAppCreator {
             .iter()
             .map(|l| l.as_ptr())
             .collect::<Vec<*const i8>>();
-        let instance_create_info = vk::InstanceCreateInfo::builder()
+        let instance_create_info = vk::InstanceCreateInfo::default()
             .push_next(&mut debug_utils_messenger_create_info)
             .application_info(&app_info)
             .enabled_extension_names(&extension_names);
@@ -176,7 +171,7 @@ impl MyAppCreator {
         };
 
         // setup debug utils
-        let debug_utils_loader = DebugUtils::new(&entry, &instance);
+        let debug_utils_loader = debug_utils::Instance::new(&entry, &instance);
         let debug_messenger = if Self::ENABLE_VALIDATION_LAYERS {
             unsafe {
                 debug_utils_loader
@@ -190,12 +185,12 @@ impl MyAppCreator {
         (instance, debug_utils_loader, debug_messenger)
     }
 
-    fn create_surface_loader(entry: &Entry, instance: &Instance) -> Surface {
-        Surface::new(&entry, &instance)
+    fn create_surface_loader(entry: &Entry, instance: &Instance) -> surface::Instance {
+        surface::Instance::new(&entry, &instance)
     }
 
-    fn create_swapchain_loader(instance: &Instance, device: &Device) -> Swapchain {
-        Swapchain::new(&instance, &device)
+    fn create_swapchain_loader(instance: &Instance, device: &Device) -> swapchain::Device {
+        swapchain::Device::new(&instance, &device)
     }
 
     fn create_surface(
@@ -207,8 +202,14 @@ impl MyAppCreator {
             ash_window::create_surface(
                 entry,
                 instance,
-                window.raw_display_handle(),
-                window.raw_window_handle(),
+                window
+                    .display_handle()
+                    .expect("Failed to get display handle")
+                    .as_raw(),
+                window
+                    .window_handle()
+                    .expect("Failed to get window handle")
+                    .as_raw(),
                 None,
             )
             .expect("Failed to create surface")
@@ -217,7 +218,7 @@ impl MyAppCreator {
 
     fn create_physical_device(
         instance: &Instance,
-        surface_loader: &Surface,
+        surface_loader: &surface::Instance,
         surface: vk::SurfaceKHR,
         required_device_extensions: &[CString],
     ) -> (vk::PhysicalDevice, vk::PhysicalDeviceMemoryProperties, u32) {
@@ -319,13 +320,12 @@ impl MyAppCreator {
     ) -> (Device, vk::Queue) {
         let queue_priorities = [1.0_f32];
         let mut queue_create_infos = vec![];
-        let queue_create_info = vk::DeviceQueueCreateInfo::builder()
+        let queue_create_info = vk::DeviceQueueCreateInfo::default()
             .queue_family_index(queue_family_index)
-            .queue_priorities(&queue_priorities)
-            .build();
+            .queue_priorities(&queue_priorities);
         queue_create_infos.push(queue_create_info);
 
-        let physical_device_features = vk::PhysicalDeviceFeatures::builder().build();
+        let physical_device_features = vk::PhysicalDeviceFeatures::default();
 
         let enable_extension_names = required_device_extensions
             .iter()
@@ -333,7 +333,7 @@ impl MyAppCreator {
             .collect::<Vec<_>>();
 
         // device create info
-        let device_create_info = vk::DeviceCreateInfo::builder()
+        let device_create_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_create_infos)
             .enabled_features(&physical_device_features)
             .enabled_extension_names(&enable_extension_names);
@@ -352,7 +352,7 @@ impl MyAppCreator {
     }
 
     fn create_command_pool(device: &Device, queue_family_index: u32) -> vk::CommandPool {
-        let command_pool_create_info = vk::CommandPoolCreateInfo::builder()
+        let command_pool_create_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
             .queue_family_index(queue_family_index);
         unsafe {
@@ -381,7 +381,7 @@ impl MyAppCreator {
         let staging_buffer = unsafe {
             device
                 .create_buffer(
-                    &vk::BufferCreateInfo::builder()
+                    &vk::BufferCreateInfo::default()
                         .size(image_size)
                         .usage(vk::BufferUsageFlags::TRANSFER_SRC),
                     None,
@@ -420,7 +420,7 @@ impl MyAppCreator {
         let image = unsafe {
             device
                 .create_image(
-                    &vk::ImageCreateInfo::builder()
+                    &vk::ImageCreateInfo::default()
                         .image_type(vk::ImageType::TYPE_2D)
                         .format(format)
                         .extent(vk::Extent3D {
@@ -458,7 +458,7 @@ impl MyAppCreator {
         unsafe {
             let command = device
                 .allocate_command_buffers(
-                    &vk::CommandBufferAllocateInfo::builder()
+                    &vk::CommandBufferAllocateInfo::default()
                         .command_pool(command_pool)
                         .level(vk::CommandBufferLevel::PRIMARY)
                         .command_buffer_count(1),
@@ -469,7 +469,7 @@ impl MyAppCreator {
             device
                 .begin_command_buffer(
                     command,
-                    &vk::CommandBufferBeginInfo::builder()
+                    &vk::CommandBufferBeginInfo::default()
                         .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                 )
                 .expect("Failed to begin command buffer");
@@ -482,22 +482,20 @@ impl MyAppCreator {
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
-                &[vk::ImageMemoryBarrier::builder()
+                &[vk::ImageMemoryBarrier::default()
                     .src_access_mask(vk::AccessFlags::empty())
                     .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
                     .old_layout(vk::ImageLayout::UNDEFINED)
                     .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
                     .image(image)
                     .subresource_range(
-                        vk::ImageSubresourceRange::builder()
+                        vk::ImageSubresourceRange::default()
                             .aspect_mask(vk::ImageAspectFlags::COLOR)
                             .base_mip_level(0)
                             .level_count(1)
                             .base_array_layer(0)
-                            .layer_count(1)
-                            .build(),
-                    )
-                    .build()],
+                            .layer_count(1),
+                    )],
             );
 
             // Copy data from buffer to image
@@ -506,14 +504,13 @@ impl MyAppCreator {
                 staging_buffer,
                 image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[vk::BufferImageCopy::builder()
+                &[vk::BufferImageCopy::default()
                     .image_subresource(
-                        vk::ImageSubresourceLayers::builder()
+                        vk::ImageSubresourceLayers::default()
                             .aspect_mask(vk::ImageAspectFlags::COLOR)
                             .mip_level(0)
                             .base_array_layer(0)
-                            .layer_count(1)
-                            .build(),
+                            .layer_count(1),
                     )
                     .image_extent(vk::Extent3D {
                         width: image_width,
@@ -523,8 +520,7 @@ impl MyAppCreator {
                     .buffer_offset(0)
                     .buffer_image_height(0)
                     .buffer_row_length(0)
-                    .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
-                    .build()],
+                    .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })],
             );
 
             // Change image layout to shader read only optimal
@@ -535,22 +531,20 @@ impl MyAppCreator {
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
-                &[vk::ImageMemoryBarrier::builder()
+                &[vk::ImageMemoryBarrier::default()
                     .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
                     .dst_access_mask(vk::AccessFlags::SHADER_READ)
                     .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
                     .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                     .image(image)
                     .subresource_range(
-                        vk::ImageSubresourceRange::builder()
+                        vk::ImageSubresourceRange::default()
                             .aspect_mask(vk::ImageAspectFlags::COLOR)
                             .base_mip_level(0)
                             .level_count(1)
                             .base_array_layer(0)
-                            .layer_count(1)
-                            .build(),
-                    )
-                    .build()],
+                            .layer_count(1),
+                    )],
             );
 
             // End command
@@ -562,9 +556,7 @@ impl MyAppCreator {
             device
                 .queue_submit(
                     queue,
-                    &[vk::SubmitInfo::builder()
-                        .command_buffers(&[command])
-                        .build()],
+                    &[vk::SubmitInfo::default().command_buffers(&[command])],
                     vk::Fence::null(),
                 )
                 .expect("Failed to submit command buffer");
@@ -585,7 +577,7 @@ impl MyAppCreator {
         let image_view = unsafe {
             device
                 .create_image_view(
-                    &vk::ImageViewCreateInfo::builder()
+                    &vk::ImageViewCreateInfo::default()
                         .view_type(vk::ImageViewType::TYPE_2D)
                         .image(image)
                         .format(format)
@@ -609,7 +601,7 @@ impl MyAppCreator {
 
         let sampler = unsafe {
             device.create_sampler(
-                &vk::SamplerCreateInfo::builder()
+                &vk::SamplerCreateInfo::default()
                     .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
                     .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
                     .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)

@@ -1,6 +1,6 @@
 use ash::{
-    extensions::khr::{Surface, Swapchain},
-    vk, Device, Entry, Instance,
+    khr::surface::Instance as Surface, khr::swapchain::Device as Swapchain, vk, Device, Entry,
+    Instance,
 };
 use egui_winit::winit;
 use std::ffi::CString;

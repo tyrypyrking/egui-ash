@@ -1,5 +1,5 @@
 use ash::{
-    extensions::khr::{Surface, Swapchain},
+    khr::{surface, swapchain},
     vk, Device,
 };
 use egui_ash::EguiCommand;
@@ -35,27 +35,24 @@ struct Vertex {
 }
 impl Vertex {
     fn get_binding_descriptions() -> [vk::VertexInputBindingDescription; 1] {
-        [vk::VertexInputBindingDescription::builder()
+        [vk::VertexInputBindingDescription::default()
             .binding(0)
             .stride(std::mem::size_of::<Self>() as u32)
-            .input_rate(vk::VertexInputRate::VERTEX)
-            .build()]
+            .input_rate(vk::VertexInputRate::VERTEX)]
     }
 
     fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
         [
-            vk::VertexInputAttributeDescription::builder()
+            vk::VertexInputAttributeDescription::default()
                 .binding(0)
                 .location(0)
                 .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(0)
-                .build(),
-            vk::VertexInputAttributeDescription::builder()
+                .offset(0),
+            vk::VertexInputAttributeDescription::default()
                 .binding(0)
                 .location(1)
                 .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(4 * 3)
-                .build(),
+                .offset(4 * 3),
         ]
     }
 }
@@ -76,8 +73,8 @@ struct TriangleRendererInner {
 
     physical_device: vk::PhysicalDevice,
     device: Arc<Device>,
-    surface_loader: Arc<Surface>,
-    swapchain_loader: Arc<Swapchain>,
+    surface_loader: Arc<surface::Instance>,
+    swapchain_loader: Arc<swapchain::Device>,
     allocator: ManuallyDrop<Arc<Mutex<Allocator>>>,
     surface: vk::SurfaceKHR,
     queue: vk::Queue,
@@ -109,8 +106,8 @@ struct TriangleRendererInner {
 impl TriangleRendererInner {
     fn create_swapchain(
         physical_device: vk::PhysicalDevice,
-        surface_loader: &ash::extensions::khr::Surface,
-        swapchain_loader: &ash::extensions::khr::Swapchain,
+        surface_loader: &surface::Instance,
+        swapchain_loader: &swapchain::Device,
         surface: vk::SurfaceKHR,
         queue_family_index: u32,
         width: u32,
@@ -162,7 +159,7 @@ impl TriangleRendererInner {
         let image_sharing_mode = vk::SharingMode::EXCLUSIVE;
         let queue_family_indices = [queue_family_index];
 
-        let swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
+        let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(surface)
             .min_image_count(image_count)
             .image_format(surface_format.format)
@@ -199,7 +196,7 @@ impl TriangleRendererInner {
     ) -> (Vec<vk::Buffer>, Vec<Allocation>) {
         let buffer_size = std::mem::size_of::<UniformBufferObject>() as u64;
         let buffer_usage = vk::BufferUsageFlags::UNIFORM_BUFFER;
-        let buffer_create_info = vk::BufferCreateInfo::builder()
+        let buffer_create_info = vk::BufferCreateInfo::default()
             .size(buffer_size)
             .usage(buffer_usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
@@ -241,10 +238,10 @@ impl TriangleRendererInner {
     }
 
     fn create_descriptor_pool(device: &Device, swapchain_count: usize) -> vk::DescriptorPool {
-        let pool_size = vk::DescriptorPoolSize::builder()
+        let pool_size = vk::DescriptorPoolSize::default()
             .ty(vk::DescriptorType::UNIFORM_BUFFER)
             .descriptor_count(swapchain_count as u32);
-        let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::builder()
+        let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(std::slice::from_ref(&pool_size))
             .max_sets(swapchain_count as u32);
         unsafe {
@@ -258,12 +255,12 @@ impl TriangleRendererInner {
         device: &Device,
         swapchain_count: usize,
     ) -> Vec<vk::DescriptorSetLayout> {
-        let ubo_layout_binding = vk::DescriptorSetLayoutBinding::builder()
+        let ubo_layout_binding = vk::DescriptorSetLayoutBinding::default()
             .binding(0)
             .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::VERTEX);
-        let ubo_layout_create_info = vk::DescriptorSetLayoutCreateInfo::builder()
+        let ubo_layout_create_info = vk::DescriptorSetLayoutCreateInfo::default()
             .bindings(std::slice::from_ref(&ubo_layout_binding));
 
         (0..swapchain_count)
@@ -281,7 +278,7 @@ impl TriangleRendererInner {
         descriptor_set_layouts: &[vk::DescriptorSetLayout],
         uniform_buffers: &Vec<vk::Buffer>,
     ) -> Vec<vk::DescriptorSet> {
-        let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::builder()
+        let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
             .set_layouts(descriptor_set_layouts);
         let descriptor_sets = unsafe {
@@ -290,11 +287,11 @@ impl TriangleRendererInner {
                 .expect("Failed to allocate descriptor sets")
         };
         for index in 0..descriptor_sets.len() {
-            let buffer_info = vk::DescriptorBufferInfo::builder()
+            let buffer_info = vk::DescriptorBufferInfo::default()
                 .buffer(uniform_buffers[index])
                 .offset(0)
                 .range(vk::WHOLE_SIZE);
-            let descriptor_write = vk::WriteDescriptorSet::builder()
+            let descriptor_write = vk::WriteDescriptorSet::default()
                 .dst_set(descriptor_sets[index])
                 .dst_binding(0)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
@@ -308,7 +305,7 @@ impl TriangleRendererInner {
     }
 
     fn create_render_pass(device: &Device, surface_format: vk::SurfaceFormatKHR) -> vk::RenderPass {
-        let attachments = [vk::AttachmentDescription::builder()
+        let attachments = [vk::AttachmentDescription::default()
             .format(surface_format.format)
             .samples(vk::SampleCountFlags::TYPE_1)
             .load_op(vk::AttachmentLoadOp::CLEAR)
@@ -316,17 +313,14 @@ impl TriangleRendererInner {
             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
             .initial_layout(vk::ImageLayout::UNDEFINED)
-            .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .build()];
-        let color_reference = [vk::AttachmentReference::builder()
+            .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
+        let color_reference = [vk::AttachmentReference::default()
             .attachment(0)
-            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .build()];
-        let subpasses = [vk::SubpassDescription::builder()
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
+        let subpasses = [vk::SubpassDescription::default()
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-            .color_attachments(&color_reference)
-            .build()];
-        let render_pass_create_info = vk::RenderPassCreateInfo::builder()
+            .color_attachments(&color_reference)];
+        let render_pass_create_info = vk::RenderPassCreateInfo::default()
             .attachments(&attachments)
             .subpasses(&subpasses);
         unsafe {
@@ -351,18 +345,17 @@ impl TriangleRendererInner {
             let color_attachment = unsafe {
                 device
                     .create_image_view(
-                        &vk::ImageViewCreateInfo::builder()
+                        &vk::ImageViewCreateInfo::default()
                             .image(image)
                             .view_type(vk::ImageViewType::TYPE_2D)
                             .format(format.format)
                             .subresource_range(
-                                vk::ImageSubresourceRange::builder()
+                                vk::ImageSubresourceRange::default()
                                     .aspect_mask(vk::ImageAspectFlags::COLOR)
                                     .base_mip_level(0)
                                     .level_count(1)
                                     .base_array_layer(0)
-                                    .layer_count(1)
-                                    .build(),
+                                    .layer_count(1),
                             ),
                         None,
                     )
@@ -373,7 +366,7 @@ impl TriangleRendererInner {
             framebuffers.push(unsafe {
                 device
                     .create_framebuffer(
-                        &vk::FramebufferCreateInfo::builder()
+                        &vk::FramebufferCreateInfo::default()
                             .render_pass(render_pass)
                             .attachments(attachments.as_slice())
                             .width(extent.width)
@@ -394,7 +387,7 @@ impl TriangleRendererInner {
     ) -> (vk::Pipeline, vk::PipelineLayout) {
         let vertex_shader_module = {
             let spirv = include_spirv!("./shaders/spv/triangle.vert.spv");
-            let shader_module_create_info = vk::ShaderModuleCreateInfo::builder().code(&spirv);
+            let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&spirv);
             unsafe {
                 device
                     .create_shader_module(&shader_module_create_info, None)
@@ -403,7 +396,7 @@ impl TriangleRendererInner {
         };
         let fragment_shader_module = {
             let spirv = include_spirv!("./shaders/spv/triangle.frag.spv");
-            let shader_module_create_info = vk::ShaderModuleCreateInfo::builder().code(&spirv);
+            let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&spirv);
             unsafe {
                 device
                     .create_shader_module(&shader_module_create_info, None)
@@ -412,33 +405,31 @@ impl TriangleRendererInner {
         };
         let main_function_name = CString::new("main").unwrap();
         let pipeline_shader_stages = [
-            vk::PipelineShaderStageCreateInfo::builder()
+            vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::VERTEX)
                 .module(vertex_shader_module)
-                .name(&main_function_name)
-                .build(),
-            vk::PipelineShaderStageCreateInfo::builder()
+                .name(&main_function_name),
+            vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::FRAGMENT)
                 .module(fragment_shader_module)
-                .name(&main_function_name)
-                .build(),
+                .name(&main_function_name),
         ];
         let pipeline_layout = unsafe {
             device
                 .create_pipeline_layout(
-                    &vk::PipelineLayoutCreateInfo::builder().set_layouts(&descriptor_set_layouts),
+                    &vk::PipelineLayoutCreateInfo::default().set_layouts(&descriptor_set_layouts),
                     None,
                 )
                 .expect("Failed to create pipeline layout")
         };
         let vertex_input_binding = Vertex::get_binding_descriptions();
         let vertex_input_attribute = Vertex::get_attribute_descriptions();
-        let input_assembly_info = vk::PipelineInputAssemblyStateCreateInfo::builder()
+        let input_assembly_info = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-        let viewport_info = vk::PipelineViewportStateCreateInfo::builder()
+        let viewport_info = vk::PipelineViewportStateCreateInfo::default()
             .viewport_count(1)
             .scissor_count(1);
-        let rasterization_info = vk::PipelineRasterizationStateCreateInfo::builder()
+        let rasterization_info = vk::PipelineRasterizationStateCreateInfo::default()
             .depth_clamp_enable(false)
             .rasterizer_discard_enable(false)
             .polygon_mode(vk::PolygonMode::FILL)
@@ -446,36 +437,36 @@ impl TriangleRendererInner {
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(false)
             .line_width(1.0);
-        let stencil_op = vk::StencilOpState::builder()
+        let stencil_op = vk::StencilOpState::default()
             .fail_op(vk::StencilOp::KEEP)
             .pass_op(vk::StencilOp::KEEP)
             .compare_op(vk::CompareOp::ALWAYS);
-        let depth_stencil_info = vk::PipelineDepthStencilStateCreateInfo::builder()
+        let depth_stencil_info = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(false)
             .depth_write_enable(false)
             .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
             .depth_bounds_test_enable(false)
             .stencil_test_enable(false)
-            .front(*stencil_op)
-            .back(*stencil_op);
-        let color_blend_attachment = vk::PipelineColorBlendAttachmentState::builder()
+            .front(stencil_op)
+            .back(stencil_op);
+        let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(
                 vk::ColorComponentFlags::R
                     | vk::ColorComponentFlags::G
                     | vk::ColorComponentFlags::B
                     | vk::ColorComponentFlags::A,
             );
-        let color_blend_info = vk::PipelineColorBlendStateCreateInfo::builder()
+        let color_blend_info = vk::PipelineColorBlendStateCreateInfo::default()
             .attachments(std::slice::from_ref(&color_blend_attachment));
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dynamic_state_info =
-            vk::PipelineDynamicStateCreateInfo::builder().dynamic_states(&dynamic_states);
-        let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
+            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default()
             .vertex_attribute_descriptions(&vertex_input_attribute)
             .vertex_binding_descriptions(&vertex_input_binding);
-        let multisample_info = vk::PipelineMultisampleStateCreateInfo::builder()
+        let multisample_info = vk::PipelineMultisampleStateCreateInfo::default()
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-        let pipeline_create_info = vk::GraphicsPipelineCreateInfo::builder()
+        let pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&pipeline_shader_stages)
             .vertex_input_state(&vertex_input_state)
             .input_assembly_state(&input_assembly_info)
@@ -530,7 +521,7 @@ impl TriangleRendererInner {
         let temporary_buffer = unsafe {
             device
                 .create_buffer(
-                    &vk::BufferCreateInfo::builder()
+                    &vk::BufferCreateInfo::default()
                         .size(vertex_buffer_size)
                         .usage(vk::BufferUsageFlags::TRANSFER_SRC),
                     None,
@@ -565,7 +556,7 @@ impl TriangleRendererInner {
         let vertex_buffer = unsafe {
             device
                 .create_buffer(
-                    &vk::BufferCreateInfo::builder()
+                    &vk::BufferCreateInfo::default()
                         .size(vertex_buffer_size)
                         .usage(
                             vk::BufferUsageFlags::TRANSFER_DST
@@ -599,7 +590,7 @@ impl TriangleRendererInner {
         let cmd = unsafe {
             device
                 .allocate_command_buffers(
-                    &vk::CommandBufferAllocateInfo::builder()
+                    &vk::CommandBufferAllocateInfo::default()
                         .command_pool(command_pool)
                         .level(vk::CommandBufferLevel::PRIMARY)
                         .command_buffer_count(1),
@@ -611,7 +602,7 @@ impl TriangleRendererInner {
             device
                 .begin_command_buffer(
                     cmd,
-                    &vk::CommandBufferBeginInfo::builder()
+                    &vk::CommandBufferBeginInfo::default()
                         .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                 )
                 .expect("Failed to begin command buffer");
@@ -619,11 +610,10 @@ impl TriangleRendererInner {
                 cmd,
                 temporary_buffer,
                 vertex_buffer,
-                &[vk::BufferCopy::builder()
+                &[vk::BufferCopy::default()
                     .src_offset(0)
                     .dst_offset(0)
-                    .size(vertex_buffer_size)
-                    .build()],
+                    .size(vertex_buffer_size)],
             );
             device
                 .end_command_buffer(cmd)
@@ -632,7 +622,7 @@ impl TriangleRendererInner {
             device
                 .queue_submit(
                     queue,
-                    &[vk::SubmitInfo::builder().command_buffers(&[cmd]).build()],
+                    &[vk::SubmitInfo::default().command_buffers(&[cmd])],
                     vk::Fence::null(),
                 )
                 .expect("Failed to submit queue");
@@ -663,7 +653,7 @@ impl TriangleRendererInner {
         unsafe {
             device
                 .allocate_command_buffers(
-                    &vk::CommandBufferAllocateInfo::builder()
+                    &vk::CommandBufferAllocateInfo::default()
                         .command_pool(command_pool)
                         .level(vk::CommandBufferLevel::PRIMARY)
                         .command_buffer_count(swapchain_count as u32),
@@ -677,7 +667,7 @@ impl TriangleRendererInner {
         swapchain_count: usize,
     ) -> (Vec<vk::Fence>, Vec<vk::Semaphore>, Vec<vk::Semaphore>) {
         let fence_create_info =
-            vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
+            vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
         let mut in_flight_fences = vec![];
         for _ in 0..swapchain_count {
             let fence = unsafe {
@@ -689,7 +679,7 @@ impl TriangleRendererInner {
         }
         let mut image_available_semaphores = vec![];
         for _ in 0..swapchain_count {
-            let semaphore_create_info = vk::SemaphoreCreateInfo::builder();
+            let semaphore_create_info = vk::SemaphoreCreateInfo::default();
             let semaphore = unsafe {
                 device
                     .create_semaphore(&semaphore_create_info, None)
@@ -699,7 +689,7 @@ impl TriangleRendererInner {
         }
         let mut render_finished_semaphores = vec![];
         for _ in 0..swapchain_count {
-            let semaphore_create_info = vk::SemaphoreCreateInfo::builder();
+            let semaphore_create_info = vk::SemaphoreCreateInfo::default();
             let semaphore = unsafe {
                 device
                     .create_semaphore(&semaphore_create_info, None)
@@ -790,7 +780,7 @@ impl TriangleRendererInner {
                 image_count
             };
 
-            let swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
+            let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
                 .surface(self.surface)
                 .min_image_count(image_count)
                 .image_color_space(surface_format.color_space)
@@ -854,8 +844,8 @@ impl TriangleRendererInner {
     fn new(
         physical_device: vk::PhysicalDevice,
         device: Arc<Device>,
-        surface_loader: Arc<Surface>,
-        swapchain_loader: Arc<Swapchain>,
+        surface_loader: Arc<surface::Instance>,
+        swapchain_loader: Arc<swapchain::Device>,
         allocator: ManuallyDrop<Arc<Mutex<Allocator>>>,
         surface: vk::SurfaceKHR,
         queue_family_index: u32,
@@ -1013,7 +1003,7 @@ impl TriangleRendererInner {
             ptr.copy_from_nonoverlapping([ubo].as_ptr(), 1);
         }
 
-        let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder()
+        let command_buffer_begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         unsafe {
             self.device
@@ -1025,14 +1015,13 @@ impl TriangleRendererInner {
 
             self.device.cmd_begin_render_pass(
                 self.command_buffers[self.current_frame],
-                &vk::RenderPassBeginInfo::builder()
+                &vk::RenderPassBeginInfo::default()
                     .render_pass(self.render_pass)
                     .framebuffer(self.framebuffers[index])
                     .render_area(
-                        vk::Rect2D::builder()
-                            .offset(vk::Offset2D::builder().x(0).y(0).build())
-                            .extent(self.surface_extent)
-                            .build(),
+                        vk::Rect2D::default()
+                            .offset(vk::Offset2D::default().x(0).y(0))
+                            .extent(self.surface_extent),
                     )
                     .clear_values(&[
                         vk::ClearValue {
@@ -1058,7 +1047,7 @@ impl TriangleRendererInner {
                 self.command_buffers[self.current_frame],
                 0,
                 std::slice::from_ref(
-                    &vk::Viewport::builder()
+                    &vk::Viewport::default()
                         .width(width as f32)
                         .height(height as f32)
                         .min_depth(0.0)
@@ -1069,8 +1058,8 @@ impl TriangleRendererInner {
                 self.command_buffers[self.current_frame],
                 0,
                 std::slice::from_ref(
-                    &vk::Rect2D::builder()
-                        .offset(vk::Offset2D::builder().build())
+                    &vk::Rect2D::default()
+                        .offset(vk::Offset2D::default())
                         .extent(self.surface_extent),
                 ),
             );
@@ -1108,7 +1097,7 @@ impl TriangleRendererInner {
         }
 
         let buffers_to_submit = [self.command_buffers[self.current_frame]];
-        let submit_info = vk::SubmitInfo::builder()
+        let submit_info = vk::SubmitInfo::default()
             .command_buffers(&buffers_to_submit)
             .wait_semaphores(std::slice::from_ref(
                 &self.image_available_semaphores[self.current_frame],
@@ -1128,7 +1117,7 @@ impl TriangleRendererInner {
         };
 
         let image_indices = [index as u32];
-        let present_info = vk::PresentInfoKHR::builder()
+        let present_info = vk::PresentInfoKHR::default()
             .wait_semaphores(std::slice::from_ref(
                 &self.render_finished_semaphores[self.current_frame],
             ))
@@ -1209,8 +1198,8 @@ impl TriangleRenderer {
     pub fn new(
         physical_device: vk::PhysicalDevice,
         device: Arc<Device>,
-        surface_loader: Arc<Surface>,
-        swapchain_loader: Arc<Swapchain>,
+        surface_loader: Arc<surface::Instance>,
+        swapchain_loader: Arc<swapchain::Device>,
         allocator: ManuallyDrop<Arc<Mutex<Allocator>>>,
         surface: vk::SurfaceKHR,
         queue_family_index: u32,
