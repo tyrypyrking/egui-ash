@@ -1,7 +1,4 @@
-use ash::{
-    extensions::khr::{Surface, Swapchain},
-    vk, Device, Entry, Instance,
-};
+use ash::{vk, Device, Entry, Instance};
 use egui_winit::winit;
 use std::ffi::CString;
 
@@ -88,8 +85,8 @@ pub struct AshRenderState<A: Allocator + 'static> {
     pub instance: Instance,
     pub physical_device: vk::PhysicalDevice,
     pub device: Device,
-    pub surface_loader: Surface,
-    pub swapchain_loader: Swapchain,
+    pub surface_loader: ash::khr::surface::Instance,
+    pub swapchain_loader: ash::khr::swapchain::Device,
     pub queue: vk::Queue,
     pub queue_family_index: u32,
     pub command_pool: vk::CommandPool,

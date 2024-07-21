@@ -32,27 +32,24 @@ struct Vertex {
 }
 impl Vertex {
     fn get_binding_descriptions() -> [vk::VertexInputBindingDescription; 1] {
-        [vk::VertexInputBindingDescription::builder()
+        [vk::VertexInputBindingDescription::default()
             .binding(0)
             .stride(std::mem::size_of::<Self>() as u32)
-            .input_rate(vk::VertexInputRate::VERTEX)
-            .build()]
+            .input_rate(vk::VertexInputRate::VERTEX)]
     }
 
     fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
         [
-            vk::VertexInputAttributeDescription::builder()
+            vk::VertexInputAttributeDescription::default()
                 .binding(0)
                 .location(0)
                 .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(0)
-                .build(),
-            vk::VertexInputAttributeDescription::builder()
+                .offset(0),
+            vk::VertexInputAttributeDescription::default()
                 .binding(0)
                 .location(1)
                 .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(4 * 3)
-                .build(),
+                .offset(4 * 3),
         ]
     }
 }
@@ -114,7 +111,7 @@ impl SceneViewInner {
     ) -> (Vec<vk::Buffer>, Vec<Allocation>) {
         let buffer_size = std::mem::size_of::<UniformBufferObject>() as u64;
         let buffer_usage = vk::BufferUsageFlags::UNIFORM_BUFFER;
-        let buffer_create_info = vk::BufferCreateInfo::builder()
+        let buffer_create_info = vk::BufferCreateInfo::default()
             .size(buffer_size)
             .usage(buffer_usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
@@ -156,10 +153,10 @@ impl SceneViewInner {
     }
 
     fn create_descriptor_pool(device: &Device) -> vk::DescriptorPool {
-        let pool_size = vk::DescriptorPoolSize::builder()
+        let pool_size = vk::DescriptorPoolSize::default()
             .ty(vk::DescriptorType::UNIFORM_BUFFER)
             .descriptor_count(Self::IN_FLIGHT_FRAMES as u32);
-        let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::builder()
+        let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(std::slice::from_ref(&pool_size))
             .max_sets(Self::IN_FLIGHT_FRAMES as u32);
         unsafe {
@@ -170,12 +167,12 @@ impl SceneViewInner {
     }
 
     fn create_descriptor_set_layouts(device: &Device) -> Vec<vk::DescriptorSetLayout> {
-        let ubo_layout_binding = vk::DescriptorSetLayoutBinding::builder()
+        let ubo_layout_binding = vk::DescriptorSetLayoutBinding::default()
             .binding(0)
             .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::VERTEX);
-        let ubo_layout_create_info = vk::DescriptorSetLayoutCreateInfo::builder()
+        let ubo_layout_create_info = vk::DescriptorSetLayoutCreateInfo::default()
             .bindings(std::slice::from_ref(&ubo_layout_binding));
 
         (0..Self::IN_FLIGHT_FRAMES)
@@ -193,7 +190,7 @@ impl SceneViewInner {
         descriptor_set_layouts: &[vk::DescriptorSetLayout],
         uniform_buffers: &Vec<vk::Buffer>,
     ) -> Vec<vk::DescriptorSet> {
-        let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::builder()
+        let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
             .set_layouts(descriptor_set_layouts);
         let descriptor_sets = unsafe {
@@ -202,11 +199,11 @@ impl SceneViewInner {
                 .expect("Failed to allocate descriptor sets")
         };
         for index in 0..descriptor_sets.len() {
-            let buffer_info = vk::DescriptorBufferInfo::builder()
+            let buffer_info = vk::DescriptorBufferInfo::default()
                 .buffer(uniform_buffers[index])
                 .offset(0)
                 .range(vk::WHOLE_SIZE);
-            let descriptor_write = vk::WriteDescriptorSet::builder()
+            let descriptor_write = vk::WriteDescriptorSet::default()
                 .dst_set(descriptor_sets[index])
                 .dst_binding(0)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
@@ -221,40 +218,36 @@ impl SceneViewInner {
 
     fn create_render_pass(device: &Device) -> vk::RenderPass {
         let attachments = [
-            vk::AttachmentDescription::builder()
+            vk::AttachmentDescription::default()
                 .format(vk::Format::R8G8B8A8_UNORM)
                 .samples(vk::SampleCountFlags::TYPE_1)
                 .load_op(vk::AttachmentLoadOp::CLEAR)
                 .store_op(vk::AttachmentStoreOp::STORE)
                 .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                 .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-                .initial_layout(vk::ImageLayout::UNDEFINED)
-                .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .build(),
-            vk::AttachmentDescription::builder()
+                .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
+            vk::AttachmentDescription::default()
                 .format(vk::Format::D32_SFLOAT)
                 .samples(vk::SampleCountFlags::TYPE_1)
                 .load_op(vk::AttachmentLoadOp::CLEAR)
                 .store_op(vk::AttachmentStoreOp::DONT_CARE)
                 .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                 .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-                .initial_layout(vk::ImageLayout::UNDEFINED)
-                .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-                .build(),
+                .initial_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
         ];
-        let color_reference = [vk::AttachmentReference::builder()
+        let color_reference = [vk::AttachmentReference::default()
             .attachment(0)
-            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .build()];
-        let depth_reference = vk::AttachmentReference::builder()
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
+        let depth_reference = vk::AttachmentReference::default()
             .attachment(1)
             .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-        let subpasses = [vk::SubpassDescription::builder()
+        let subpasses = [vk::SubpassDescription::default()
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
             .color_attachments(&color_reference)
-            .depth_stencil_attachment(&depth_reference)
-            .build()];
-        let render_pass_create_info = vk::RenderPassCreateInfo::builder()
+            .depth_stencil_attachment(&depth_reference)];
+        let render_pass_create_info = vk::RenderPassCreateInfo::default()
             .attachments(&attachments)
             .subpasses(&subpasses);
         unsafe {
@@ -292,7 +285,7 @@ impl SceneViewInner {
         for _ in 0..Self::IN_FLIGHT_FRAMES {
             let mut attachments = vec![];
 
-            let color_image_create_info = vk::ImageCreateInfo::builder()
+            let color_image_create_info = vk::ImageCreateInfo::default()
                 .format(vk::Format::R8G8B8A8_UNORM)
                 .samples(vk::SampleCountFlags::TYPE_1)
                 .mip_levels(1)
@@ -333,18 +326,15 @@ impl SceneViewInner {
             let color_attachment = unsafe {
                 device
                     .create_image_view(
-                        &vk::ImageViewCreateInfo::builder()
+                        &vk::ImageViewCreateInfo::default()
                             .image(color_image)
                             .view_type(vk::ImageViewType::TYPE_2D)
                             .format(vk::Format::R8G8B8A8_UNORM)
                             .subresource_range(
-                                vk::ImageSubresourceRange::builder()
+                                vk::ImageSubresourceRange::default()
                                     .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                    .base_mip_level(0)
                                     .level_count(1)
-                                    .base_array_layer(0)
-                                    .layer_count(1)
-                                    .build(),
+                                    .layer_count(1),
                             ),
                         None,
                     )
@@ -355,7 +345,7 @@ impl SceneViewInner {
             color_image_allocations.push(color_allocation);
             color_image_views.push(color_attachment);
 
-            let depth_image_create_info = vk::ImageCreateInfo::builder()
+            let depth_image_create_info = vk::ImageCreateInfo::default()
                 .format(vk::Format::D32_SFLOAT)
                 .samples(vk::SampleCountFlags::TYPE_1)
                 .mip_levels(1)
@@ -396,18 +386,15 @@ impl SceneViewInner {
             let depth_attachment = unsafe {
                 device
                     .create_image_view(
-                        &vk::ImageViewCreateInfo::builder()
+                        &vk::ImageViewCreateInfo::default()
                             .image(depth_image)
                             .view_type(vk::ImageViewType::TYPE_2D)
                             .format(vk::Format::D32_SFLOAT)
                             .subresource_range(
-                                vk::ImageSubresourceRange::builder()
+                                vk::ImageSubresourceRange::default()
                                     .aspect_mask(vk::ImageAspectFlags::DEPTH)
-                                    .base_mip_level(0)
                                     .level_count(1)
-                                    .base_array_layer(0)
-                                    .layer_count(1)
-                                    .build(),
+                                    .layer_count(1),
                             ),
                         None,
                     )
@@ -421,7 +408,7 @@ impl SceneViewInner {
             framebuffers.push(unsafe {
                 device
                     .create_framebuffer(
-                        &vk::FramebufferCreateInfo::builder()
+                        &vk::FramebufferCreateInfo::default()
                             .render_pass(render_pass)
                             .attachments(attachments.as_slice())
                             .width(width)
@@ -435,7 +422,7 @@ impl SceneViewInner {
             let cmd = unsafe {
                 device
                     .allocate_command_buffers(
-                        &vk::CommandBufferAllocateInfo::builder()
+                        &vk::CommandBufferAllocateInfo::default()
                             .command_pool(command_pool)
                             .level(vk::CommandBufferLevel::PRIMARY)
                             .command_buffer_count(1),
@@ -446,7 +433,7 @@ impl SceneViewInner {
                 device
                     .begin_command_buffer(
                         cmd,
-                        &vk::CommandBufferBeginInfo::builder()
+                        &vk::CommandBufferBeginInfo::default()
                             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                     )
                     .expect("Failed to begin command buffer");
@@ -463,13 +450,12 @@ impl SceneViewInner {
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 vk::PipelineStageFlags::TOP_OF_PIPE,
                 vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::ImageSubresourceRange::builder()
+                vk::ImageSubresourceRange::default()
                     .aspect_mask(vk::ImageAspectFlags::COLOR)
                     .base_array_layer(0u32)
                     .layer_count(1u32)
                     .base_mip_level(0u32)
-                    .level_count(1u32)
-                    .build(),
+                    .level_count(1u32),
             );
             unsafe {
                 device
@@ -478,7 +464,7 @@ impl SceneViewInner {
                 device
                     .queue_submit(
                         queue,
-                        &[vk::SubmitInfo::builder().command_buffers(&[cmd]).build()],
+                        &[vk::SubmitInfo::default().command_buffers(&[cmd])],
                         vk::Fence::null(),
                     )
                     .expect("Failed to submit queue");
@@ -500,7 +486,7 @@ impl SceneViewInner {
     fn create_sampler(device: &Device) -> vk::Sampler {
         unsafe {
             device.create_sampler(
-                &vk::SamplerCreateInfo::builder()
+                &vk::SamplerCreateInfo::default()
                     .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
                     .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
                     .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
@@ -522,7 +508,7 @@ impl SceneViewInner {
     ) -> (vk::Pipeline, vk::PipelineLayout) {
         let vertex_shader_module = {
             let spirv = include_spirv!("./shaders/spv/model.vert.spv");
-            let shader_module_create_info = vk::ShaderModuleCreateInfo::builder().code(&spirv);
+            let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&spirv);
             unsafe {
                 device
                     .create_shader_module(&shader_module_create_info, None)
@@ -531,7 +517,7 @@ impl SceneViewInner {
         };
         let fragment_shader_module = {
             let spirv = include_spirv!("./shaders/spv/model.frag.spv");
-            let shader_module_create_info = vk::ShaderModuleCreateInfo::builder().code(&spirv);
+            let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&spirv);
             unsafe {
                 device
                     .create_shader_module(&shader_module_create_info, None)
@@ -540,33 +526,31 @@ impl SceneViewInner {
         };
         let main_function_name = CString::new("main").unwrap();
         let pipeline_shader_stages = [
-            vk::PipelineShaderStageCreateInfo::builder()
+            vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::VERTEX)
                 .module(vertex_shader_module)
-                .name(&main_function_name)
-                .build(),
-            vk::PipelineShaderStageCreateInfo::builder()
+                .name(&main_function_name),
+            vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::FRAGMENT)
                 .module(fragment_shader_module)
-                .name(&main_function_name)
-                .build(),
+                .name(&main_function_name),
         ];
         let pipeline_layout = unsafe {
             device
                 .create_pipeline_layout(
-                    &vk::PipelineLayoutCreateInfo::builder().set_layouts(&descriptor_set_layouts),
+                    &vk::PipelineLayoutCreateInfo::default().set_layouts(&descriptor_set_layouts),
                     None,
                 )
                 .expect("Failed to create pipeline layout")
         };
         let vertex_input_binding = Vertex::get_binding_descriptions();
         let vertex_input_attribute = Vertex::get_attribute_descriptions();
-        let input_assembly_info = vk::PipelineInputAssemblyStateCreateInfo::builder()
+        let input_assembly_info = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-        let viewport_info = vk::PipelineViewportStateCreateInfo::builder()
+        let viewport_info = vk::PipelineViewportStateCreateInfo::default()
             .viewport_count(1)
             .scissor_count(1);
-        let rasterization_info = vk::PipelineRasterizationStateCreateInfo::builder()
+        let rasterization_info = vk::PipelineRasterizationStateCreateInfo::default()
             .depth_clamp_enable(false)
             .rasterizer_discard_enable(false)
             .polygon_mode(vk::PolygonMode::FILL)
@@ -574,36 +558,36 @@ impl SceneViewInner {
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(false)
             .line_width(1.0);
-        let stencil_op = vk::StencilOpState::builder()
+        let stencil_op = vk::StencilOpState::default()
             .fail_op(vk::StencilOp::KEEP)
             .pass_op(vk::StencilOp::KEEP)
             .compare_op(vk::CompareOp::ALWAYS);
-        let depth_stencil_info = vk::PipelineDepthStencilStateCreateInfo::builder()
+        let depth_stencil_info = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(true)
             .depth_write_enable(true)
             .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
             .depth_bounds_test_enable(false)
             .stencil_test_enable(false)
-            .front(*stencil_op)
-            .back(*stencil_op);
-        let color_blend_attachment = vk::PipelineColorBlendAttachmentState::builder()
+            .front(stencil_op)
+            .back(stencil_op);
+        let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(
                 vk::ColorComponentFlags::R
                     | vk::ColorComponentFlags::G
                     | vk::ColorComponentFlags::B
                     | vk::ColorComponentFlags::A,
             );
-        let color_blend_info = vk::PipelineColorBlendStateCreateInfo::builder()
+        let color_blend_info = vk::PipelineColorBlendStateCreateInfo::default()
             .attachments(std::slice::from_ref(&color_blend_attachment));
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dynamic_state_info =
-            vk::PipelineDynamicStateCreateInfo::builder().dynamic_states(&dynamic_states);
-        let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
+            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default()
             .vertex_attribute_descriptions(&vertex_input_attribute)
             .vertex_binding_descriptions(&vertex_input_binding);
-        let multisample_info = vk::PipelineMultisampleStateCreateInfo::builder()
+        let multisample_info = vk::PipelineMultisampleStateCreateInfo::default()
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-        let pipeline_create_info = vk::GraphicsPipelineCreateInfo::builder()
+        let pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&pipeline_shader_stages)
             .vertex_input_state(&vertex_input_state)
             .input_assembly_state(&input_assembly_info)
@@ -680,7 +664,7 @@ impl SceneViewInner {
         let temporary_buffer = unsafe {
             device
                 .create_buffer(
-                    &vk::BufferCreateInfo::builder()
+                    &vk::BufferCreateInfo::default()
                         .size(vertex_buffer_size)
                         .usage(vk::BufferUsageFlags::TRANSFER_SRC),
                     None,
@@ -715,7 +699,7 @@ impl SceneViewInner {
         let vertex_buffer = unsafe {
             device
                 .create_buffer(
-                    &vk::BufferCreateInfo::builder()
+                    &vk::BufferCreateInfo::default()
                         .size(vertex_buffer_size)
                         .usage(
                             vk::BufferUsageFlags::TRANSFER_DST
@@ -749,7 +733,7 @@ impl SceneViewInner {
         let cmd = unsafe {
             device
                 .allocate_command_buffers(
-                    &vk::CommandBufferAllocateInfo::builder()
+                    &vk::CommandBufferAllocateInfo::default()
                         .command_pool(command_pool)
                         .level(vk::CommandBufferLevel::PRIMARY)
                         .command_buffer_count(1),
@@ -761,7 +745,7 @@ impl SceneViewInner {
             device
                 .begin_command_buffer(
                     cmd,
-                    &vk::CommandBufferBeginInfo::builder()
+                    &vk::CommandBufferBeginInfo::default()
                         .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                 )
                 .expect("Failed to begin command buffer");
@@ -769,11 +753,10 @@ impl SceneViewInner {
                 cmd,
                 temporary_buffer,
                 vertex_buffer,
-                &[vk::BufferCopy::builder()
+                &[vk::BufferCopy::default()
                     .src_offset(0)
                     .dst_offset(0)
-                    .size(vertex_buffer_size)
-                    .build()],
+                    .size(vertex_buffer_size)],
             );
             device
                 .end_command_buffer(cmd)
@@ -782,7 +765,7 @@ impl SceneViewInner {
             device
                 .queue_submit(
                     queue,
-                    &[vk::SubmitInfo::builder().command_buffers(&[cmd]).build()],
+                    &[vk::SubmitInfo::default().command_buffers(&[cmd])],
                     vk::Fence::null(),
                 )
                 .expect("Failed to submit queue");
@@ -812,7 +795,7 @@ impl SceneViewInner {
         unsafe {
             device
                 .allocate_command_buffers(
-                    &vk::CommandBufferAllocateInfo::builder()
+                    &vk::CommandBufferAllocateInfo::default()
                         .command_pool(command_pool)
                         .level(vk::CommandBufferLevel::PRIMARY)
                         .command_buffer_count(Self::IN_FLIGHT_FRAMES as u32),
@@ -823,7 +806,7 @@ impl SceneViewInner {
 
     fn create_sync_objects(device: &Device) -> Vec<vk::Fence> {
         let fence_create_info =
-            vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
+            vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
         let mut in_flight_fences = vec![];
         for _ in 0..Self::IN_FLIGHT_FRAMES {
             let fence = unsafe {
@@ -1055,7 +1038,7 @@ impl SceneViewInner {
             ptr.copy_from_nonoverlapping([ubo].as_ptr(), 1);
         }
 
-        let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder()
+        let command_buffer_begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         unsafe {
             self.device
@@ -1065,41 +1048,55 @@ impl SceneViewInner {
                 )
                 .expect("Failed to begin command buffer");
 
+            // Insert image layout transitions and memory barriers for the color and depth images.
             vkutils::insert_image_memory_barrier(
                 &self.device,
                 &self.command_buffers[self.current_frame],
                 &self.color_images[self.current_frame],
                 self.queue_family_index,
                 self.queue_family_index,
-                vk::AccessFlags::NONE,
+                vk::AccessFlags::SHADER_READ,
                 vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
                 vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::ImageSubresourceRange::builder()
+                vk::ImageSubresourceRange::default()
                     .aspect_mask(vk::ImageAspectFlags::COLOR)
                     .base_array_layer(0u32)
                     .layer_count(1u32)
                     .base_mip_level(0u32)
-                    .level_count(1u32)
-                    .build(),
+                    .level_count(1u32),
+            );
+            vkutils::insert_image_memory_barrier(
+                &self.device,
+                &self.command_buffers[self.current_frame],
+                &self.depth_images[self.current_frame],
+                self.queue_family_index,
+                self.queue_family_index,
+                vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                vk::ImageSubresourceRange::default()
+                    .aspect_mask(vk::ImageAspectFlags::DEPTH)
+                    .layer_count(1u32)
+                    .level_count(1u32),
             );
 
             self.device.cmd_begin_render_pass(
                 self.command_buffers[self.current_frame],
-                &vk::RenderPassBeginInfo::builder()
+                &vk::RenderPassBeginInfo::default()
                     .render_pass(self.render_pass)
                     .framebuffer(self.framebuffers[self.current_frame])
                     .render_area(
-                        vk::Rect2D::builder()
-                            .offset(*vk::Offset2D::builder().x(0).y(0))
-                            .extent(
-                                *vk::Extent2D::builder()
-                                    .width(self.width)
-                                    .height(self.height),
-                            )
-                            .build(),
+                        vk::Rect2D::default().extent(
+                            vk::Extent2D::default()
+                                .width(self.width)
+                                .height(self.height),
+                        ),
                     )
                     .clear_values(&[
                         vk::ClearValue {
@@ -1125,7 +1122,7 @@ impl SceneViewInner {
                 self.command_buffers[self.current_frame],
                 0,
                 std::slice::from_ref(
-                    &vk::Viewport::builder()
+                    &vk::Viewport::default()
                         .width(self.width as f32)
                         .height(self.height as f32)
                         .min_depth(0.0)
@@ -1136,13 +1133,11 @@ impl SceneViewInner {
                 self.command_buffers[self.current_frame],
                 0,
                 std::slice::from_ref(
-                    &vk::Rect2D::builder()
-                        .offset(*vk::Offset2D::builder())
-                        .extent(
-                            *vk::Extent2D::builder()
-                                .width(self.width)
-                                .height(self.height),
-                        ),
+                    &vk::Rect2D::default().extent(
+                        vk::Extent2D::default()
+                            .width(self.width)
+                            .height(self.height),
+                    ),
                 ),
             );
             self.device.cmd_bind_descriptor_sets(
@@ -1183,13 +1178,12 @@ impl SceneViewInner {
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
                 vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::ImageSubresourceRange::builder()
+                vk::ImageSubresourceRange::default()
                     .aspect_mask(vk::ImageAspectFlags::COLOR)
                     .base_array_layer(0u32)
                     .layer_count(1u32)
                     .base_mip_level(0u32)
-                    .level_count(1u32)
-                    .build(),
+                    .level_count(1u32),
             );
 
             self.device
@@ -1198,7 +1192,7 @@ impl SceneViewInner {
         }
 
         let buffers_to_submit = [self.command_buffers[self.current_frame]];
-        let submit_info = vk::SubmitInfo::builder().command_buffers(&buffers_to_submit);
+        let submit_info = vk::SubmitInfo::default().command_buffers(&buffers_to_submit);
         unsafe {
             self.device
                 .queue_submit(

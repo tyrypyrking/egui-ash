@@ -1,4 +1,7 @@
-use egui::{ahash::HashMapExt, DeferredViewportUiCallback, ViewportIdMap};
+use egui::{
+    ahash::{HashMapExt, HashSet},
+    DeferredViewportUiCallback, ViewportIdMap,
+};
 #[cfg(feature = "accesskit")]
 use egui_winit::accesskit_winit::ActionRequestEvent;
 use egui_winit::winit::{
@@ -47,7 +50,7 @@ struct Viewport {
 }
 impl Viewport {
     fn update_viewport_info(&mut self, ctx: &egui::Context) {
-        egui_winit::update_viewport_info(&mut self.info, ctx, &self.window)
+        egui_winit::update_viewport_info(&mut self.info, ctx, &self.window, false);
     }
 }
 
@@ -477,15 +480,14 @@ impl<A: Allocator + 'static> Integration<A> {
                     });
                 }
 
-                let is_viewport_focused = *focused_viewport == Some(viewport_id);
-                let mut _screenshot_requested = false;
+                viewport.info.focused = Some(*focused_viewport == Some(viewport_id));
+                let mut _actions = HashSet::default();
                 egui_winit::process_viewport_commands(
                     &self.context,
                     &mut viewport.info,
                     output.commands.clone(),
                     &viewport.window,
-                    is_viewport_focused,
-                    &mut _screenshot_requested,
+                    &mut _actions,
                 )
             }
 
@@ -719,15 +721,14 @@ fn initialize_or_update_viewport<'vp>(
                 );
                 viewport.is_first_frame = true;
             } else {
-                let is_viewport_focused = focused_viewport == Some(ids.this);
-                let mut _screenshot_requested = false;
+                viewport.info.focused = Some(focused_viewport == Some(ids.this));
+                let mut _actions = HashSet::default();
                 egui_winit::process_viewport_commands(
                     &context,
                     &mut viewport.info,
                     delta_commands,
                     &viewport.window,
-                    is_viewport_focused,
-                    &mut _screenshot_requested,
+                    &mut _actions,
                 );
             }
 
@@ -748,11 +749,11 @@ fn create_viewport_window(
 ) -> winit::window::Window {
     #[cfg(feature = "persistence")]
     if persistent_windows {
+        let egui_zoom_factor = context.zoom_factor();
         let window_settings = storage
             .get_windows()
             .and_then(|windows| windows.get(&viewport_id).map(|s| s.to_owned()))
             .map(|mut settings| {
-                let egui_zoom_factor = context.zoom_factor();
                 settings.clamp_size_to_sane_values(utils::largest_monitor_point_size(
                     egui_zoom_factor,
                     event_loop,
@@ -762,7 +763,8 @@ fn create_viewport_window(
             });
 
         if let Some(window_settings) = window_settings {
-            builder = window_settings.initialize_viewport_builder(builder);
+            builder =
+                window_settings.initialize_viewport_builder(egui_zoom_factor, &event_loop, builder);
         }
     }
 
@@ -936,15 +938,14 @@ fn immediate_viewport_renderer(
                 presenters.recreate_swapchain_if_needed(viewport.ids.this, &viewport.window)
             }
 
-            let is_viewport_focused = *focused_viewport == Some(viewport_id);
-            let mut _screenshot_requested = false;
+            viewport.info.focused = Some(*focused_viewport == Some(viewport_id));
+            let mut _actions = HashSet::default();
             egui_winit::process_viewport_commands(
                 &ctx,
                 &mut viewport.info,
                 output.commands.clone(),
                 &viewport.window,
-                is_viewport_focused,
-                &mut _screenshot_requested,
+                &mut _actions,
             )
         }
 

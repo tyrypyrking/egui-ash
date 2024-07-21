@@ -1,14 +1,13 @@
 use anyhow::Result;
-use ash::{
-    extensions::khr::{Surface, Swapchain},
-    vk, Device, Entry, Instance,
-};
+use ash::{vk, Device, Entry, Instance};
 use egui_winit::winit;
-use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
+use raw_window_handle::{HasDisplayHandle as _, HasWindowHandle as _};
 use std::collections::HashMap;
 
-use crate::renderer::{EguiCommand, SwapchainUpdateInfo};
-use crate::utils;
+use crate::{
+    renderer::{EguiCommand, SwapchainUpdateInfo},
+    utils,
+};
 
 struct Presenter {
     width: u32,
@@ -39,8 +38,8 @@ impl Presenter {
         height: u32,
         physical_device: vk::PhysicalDevice,
         surface: vk::SurfaceKHR,
-        surface_loader: &Surface,
-        swapchain_loader: &Swapchain,
+        surface_loader: &ash::khr::surface::Instance,
+        swapchain_loader: &ash::khr::swapchain::Device,
         present_mode: vk::PresentModeKHR,
     ) -> Result<(vk::SwapchainKHR, Vec<vk::Image>, vk::Format, vk::Extent2D)> {
         let surface_capabilities = unsafe {
@@ -94,7 +93,7 @@ impl Presenter {
         };
 
         // create swapchain
-        let swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
+        let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(surface)
             .min_image_count(image_count)
             .image_color_space(surface_format.color_space)
@@ -125,7 +124,7 @@ impl Presenter {
         command_pool: vk::CommandPool,
         len: u32,
     ) -> Result<Vec<vk::CommandBuffer>> {
-        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::builder()
+        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(len);
@@ -140,7 +139,7 @@ impl Presenter {
     ) -> Result<(Vec<vk::Fence>, Vec<vk::Semaphore>, Vec<vk::Semaphore>)> {
         // create fences
         let fence_create_info =
-            vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
+            vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
         let mut in_flight_fences = vec![];
         for _ in 0..len {
             let fence = unsafe { device.create_fence(&fence_create_info, None)? };
@@ -150,13 +149,13 @@ impl Presenter {
         // create semaphores
         let mut image_available_semaphores = vec![];
         for _ in 0..len {
-            let semaphore_create_info = vk::SemaphoreCreateInfo::builder();
+            let semaphore_create_info = vk::SemaphoreCreateInfo::default();
             let semaphore = unsafe { device.create_semaphore(&semaphore_create_info, None)? };
             image_available_semaphores.push(semaphore);
         }
         let mut render_finished_semaphores = vec![];
         for _ in 0..len {
-            let semaphore_create_info = vk::SemaphoreCreateInfo::builder();
+            let semaphore_create_info = vk::SemaphoreCreateInfo::default();
             let semaphore = unsafe { device.create_semaphore(&semaphore_create_info, None)? };
             render_finished_semaphores.push(semaphore);
         }
@@ -173,8 +172,8 @@ impl Presenter {
         instance: &Instance,
         physical_device: vk::PhysicalDevice,
         device: Device,
-        surface_loader: &Surface,
-        swapchain_loader: &Swapchain,
+        surface_loader: &ash::khr::surface::Instance,
+        swapchain_loader: &ash::khr::swapchain::Device,
         command_pool: vk::CommandPool,
         window: &winit::window::Window,
         clear_color: [f32; 4],
@@ -193,8 +192,14 @@ impl Presenter {
             ash_window::create_surface(
                 entry,
                 instance,
-                window.raw_display_handle(),
-                window.raw_window_handle(),
+                window
+                    .display_handle()
+                    .expect("Unable to retrieve a display handle")
+                    .as_raw(),
+                window
+                    .window_handle()
+                    .expect("Unable to retrieve a window handle")
+                    .as_raw(),
                 None,
             )
             .expect("Failed to create surface")
@@ -255,8 +260,8 @@ impl Presenter {
         &mut self,
         physical_device: vk::PhysicalDevice,
         device: &Device,
-        surface_loader: &Surface,
-        swapchain_loader: &Swapchain,
+        surface_loader: &ash::khr::surface::Instance,
+        swapchain_loader: &ash::khr::swapchain::Device,
         command_pool: vk::CommandPool,
         window: &winit::window::Window,
     ) {
@@ -332,80 +337,24 @@ impl Presenter {
         self.current_frame = 0;
     }
 
-    fn clear_swapchain_image(
-        &self,
-        cmd: vk::CommandBuffer,
-        device: &Device,
-        color: [f32; 4],
-        swapchain_index: usize,
-        swapchain_images: Vec<vk::Image>,
-    ) {
-        utils::insert_image_memory_barrier(
-            &device,
-            &cmd,
-            &swapchain_images[swapchain_index],
-            vk::QUEUE_FAMILY_IGNORED,
-            vk::QUEUE_FAMILY_IGNORED,
-            vk::AccessFlags::NONE_KHR,
-            vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-            vk::ImageLayout::UNDEFINED,
-            vk::ImageLayout::GENERAL,
-            vk::PipelineStageFlags::ALL_GRAPHICS,
-            vk::PipelineStageFlags::ALL_GRAPHICS,
-            vk::ImageSubresourceRange::builder()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                .base_array_layer(0u32)
-                .layer_count(1u32)
-                .base_mip_level(0u32)
-                .level_count(1u32)
-                .build(),
-        );
-        unsafe {
-            device.cmd_clear_color_image(
-                cmd,
-                swapchain_images[swapchain_index],
-                vk::ImageLayout::GENERAL,
-                &vk::ClearColorValue { float32: color },
-                std::slice::from_ref(
-                    &vk::ImageSubresourceRange::builder()
-                        .aspect_mask(vk::ImageAspectFlags::COLOR)
-                        .base_array_layer(0u32)
-                        .layer_count(1u32)
-                        .base_mip_level(0u32)
-                        .level_count(1u32),
-                ),
-            )
-        }
-        utils::insert_image_memory_barrier(
-            &device,
-            &cmd,
-            &swapchain_images[swapchain_index],
-            vk::QUEUE_FAMILY_IGNORED,
-            vk::QUEUE_FAMILY_IGNORED,
-            vk::AccessFlags::NONE_KHR,
-            vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-            vk::ImageLayout::GENERAL,
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            vk::PipelineStageFlags::ALL_GRAPHICS,
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            vk::ImageSubresourceRange::builder()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                .base_array_layer(0u32)
-                .layer_count(1u32)
-                .base_mip_level(0u32)
-                .level_count(1u32)
-                .build(),
-        );
-    }
-
     fn present(
         &mut self,
         mut egui_cmd: EguiCommand,
         device: &Device,
-        swapchain_loader: &Swapchain,
+        swapchain_loader: &ash::khr::swapchain::Device,
         queue: vk::Queue,
     ) -> anyhow::Result<()> {
-        // qcquire next image
+        // Wait for the resources at this index to be completed on the GPU before requesting an available image.
+        // Otherwise, the `image_available_semaphores` below may not be ready for reuse.
+        unsafe {
+            device.wait_for_fences(
+                std::slice::from_ref(&self.in_flight_fences[self.current_frame]),
+                true,
+                u64::MAX,
+            )
+        }?;
+
+        // acquire next image
         let result = unsafe {
             swapchain_loader.acquire_next_image(
                 self.swapchain,
@@ -423,22 +372,6 @@ impl Presenter {
             Err(error) => return Err(anyhow::anyhow!(error)),
         };
 
-        // wait fence
-        unsafe {
-            device.wait_for_fences(
-                std::slice::from_ref(&self.in_flight_fences[self.current_frame]),
-                true,
-                u64::MAX,
-            )
-        }?;
-
-        // reset fence
-        unsafe {
-            device.reset_fences(std::slice::from_ref(
-                &self.in_flight_fences[self.current_frame],
-            ))
-        }?;
-
         // clear command buffer
         unsafe {
             device.reset_command_buffer(
@@ -448,7 +381,7 @@ impl Presenter {
         }
 
         // begin command buffer
-        let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder()
+        let command_buffer_begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         unsafe {
             device.begin_command_buffer(
@@ -469,13 +402,24 @@ impl Presenter {
             self.dirty_flag = false;
         }
 
-        // store color to swapchain image
-        self.clear_swapchain_image(
+        // Ensure that the image layout is correct for egui (i.e., `COLOR_ATTACHMENT_OPTIMAL`).
+        // This includes converting `UNDEFINED` or `PRESENT_SRC_KHR` layouts to `COLOR_ATTACHMENT_OPTIMAL`, as well as a no-op when it is already in the correct layout.
+        utils::insert_image_memory_barrier(
+            device,
             self.render_command_buffers[self.current_frame],
-            &self.device,
-            self.clear_color,
-            index,
-            self.swapchain_images.clone(),
+            self.swapchain_images[index],
+            vk::QUEUE_FAMILY_IGNORED,
+            vk::QUEUE_FAMILY_IGNORED,
+            vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            vk::AccessFlags::COLOR_ATTACHMENT_READ,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .layer_count(1)
+                .level_count(1),
         );
 
         // record egui cmd
@@ -484,9 +428,16 @@ impl Presenter {
         // end command buffer
         unsafe { device.end_command_buffer(self.render_command_buffers[self.current_frame]) }?;
 
+        // reset fence
+        unsafe {
+            device.reset_fences(std::slice::from_ref(
+                &self.in_flight_fences[self.current_frame],
+            ))
+        }?;
+
         // submit command buffer
         let buffers_to_submit = [self.render_command_buffers[self.current_frame]];
-        let submit_info = vk::SubmitInfo::builder()
+        let submit_info = vk::SubmitInfo::default()
             .command_buffers(&buffers_to_submit)
             .wait_semaphores(std::slice::from_ref(
                 &self.image_available_semaphores[self.current_frame],
@@ -505,7 +456,7 @@ impl Presenter {
 
         // present swapchain image
         let image_indices = [index as u32];
-        let present_info = vk::PresentInfoKHR::builder()
+        let present_info = vk::PresentInfoKHR::default()
             .wait_semaphores(std::slice::from_ref(
                 &self.render_finished_semaphores[self.current_frame],
             ))
@@ -528,8 +479,8 @@ impl Presenter {
     fn destroy(
         &self,
         device: &Device,
-        swapchain_loader: &Swapchain,
-        surface_loader: &Surface,
+        surface_loader: &ash::khr::surface::Instance,
+        swapchain_loader: &ash::khr::swapchain::Device,
         command_pool: vk::CommandPool,
     ) {
         // wait device idle
@@ -564,8 +515,8 @@ pub struct Presenters {
     instance: Instance,
     physical_device: vk::PhysicalDevice,
     device: Device,
-    surface_loader: Surface,
-    swapchain_loader: Swapchain,
+    surface_loader: ash::khr::surface::Instance,
+    swapchain_loader: ash::khr::swapchain::Device,
     queue: vk::Queue,
     command_pool: vk::CommandPool,
     presenters: HashMap<egui::ViewportId, Presenter>,
@@ -578,8 +529,8 @@ impl Presenters {
         instance: Instance,
         physical_device: vk::PhysicalDevice,
         device: Device,
-        surface_loader: Surface,
-        swapchain_loader: Swapchain,
+        surface_loader: ash::khr::surface::Instance,
+        swapchain_loader: ash::khr::swapchain::Device,
         queue: vk::Queue,
         command_pool: vk::CommandPool,
         clear_color: [f32; 4],
@@ -646,8 +597,8 @@ impl Presenters {
         if let Some(presenter) = self.presenters.remove(&viewport_id) {
             presenter.destroy(
                 &self.device,
-                &self.swapchain_loader,
                 &self.surface_loader,
+                &self.swapchain_loader,
                 self.command_pool,
             );
         }
@@ -673,8 +624,8 @@ impl Presenters {
             if let Some(presenter) = self.presenters.remove(&id) {
                 presenter.destroy(
                     &self.device,
-                    &self.swapchain_loader,
                     &self.surface_loader,
+                    &self.swapchain_loader,
                     self.command_pool,
                 );
             }
@@ -685,8 +636,8 @@ impl Presenters {
         for (_, presenter) in self.presenters.drain() {
             presenter.destroy(
                 &self.device,
-                &self.swapchain_loader,
                 &self.surface_loader,
+                &self.swapchain_loader,
                 self.command_pool,
             );
         }

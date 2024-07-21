@@ -1,6 +1,5 @@
-use ash::extensions::khr::Swapchain;
 use egui_winit::winit::{self, event_loop::EventLoopBuilder};
-use raw_window_handle::HasRawDisplayHandle;
+use raw_window_handle::HasDisplayHandle as _;
 use std::{
     ffi::CStr,
     mem::ManuallyDrop,
@@ -77,7 +76,7 @@ pub fn run<C: AppCreator<A> + 'static, A: Allocator + 'static>(
 ) -> ExitCode {
     let app_id = app_id.into();
 
-    let device_extensions = [Swapchain::name().to_owned()];
+    let device_extensions = [ash::khr::swapchain::NAME.to_owned()];
 
     let event_loop = EventLoopBuilder::<IntegrationEvent>::with_user_event()
         .build()
@@ -108,11 +107,11 @@ pub fn run<C: AppCreator<A> + 'static, A: Allocator + 'static>(
     let main_window = if let Some(mut viewport_builder) = run_option.viewport_builder {
         #[cfg(feature = "persistence")]
         if run_option.persistent_windows {
+            let egui_zoom_factor = context.zoom_factor();
             let window_settings = storage
                 .get_windows()
                 .and_then(|windows| windows.get(&egui::ViewportId::ROOT).map(|s| s.to_owned()))
                 .map(|mut settings| {
-                    let egui_zoom_factor = context.zoom_factor();
                     settings.clamp_size_to_sane_values(utils::largest_monitor_point_size(
                         egui_zoom_factor,
                         &event_loop,
@@ -122,7 +121,11 @@ pub fn run<C: AppCreator<A> + 'static, A: Allocator + 'static>(
                 });
 
             if let Some(window_settings) = window_settings {
-                viewport_builder = window_settings.initialize_viewport_builder(viewport_builder);
+                viewport_builder = window_settings.initialize_viewport_builder(
+                    egui_zoom_factor,
+                    &event_loop,
+                    viewport_builder,
+                );
             }
         }
 
@@ -142,8 +145,13 @@ pub fn run<C: AppCreator<A> + 'static, A: Allocator + 'static>(
             .unwrap()
     };
 
-    let instance_extensions =
-        ash_window::enumerate_required_extensions(event_loop.raw_display_handle()).unwrap();
+    let instance_extensions = ash_window::enumerate_required_extensions(
+        event_loop
+            .display_handle()
+            .expect("Unable to retrieve a display handle")
+            .as_raw(),
+    )
+    .unwrap();
     let instance_extensions = instance_extensions
         .into_iter()
         .map(|&ext| unsafe { CStr::from_ptr(ext).to_owned() })
