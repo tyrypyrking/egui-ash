@@ -1,14 +1,14 @@
 [package]
 name = "egui-ash"
 version = "0.4.0"
-authors = ["ORITO Itsuki <orito.itsuki@gmail.com>"]
+authors = ["Ryan Andersen <ryco117@gmail.com>", "ORITO Itsuki <orito.itsuki@gmail.com>"]
 description = "egui integration for ash (Vulkan)."
 edition = "2021"
 license = "MIT OR Apache-2.0"
-homepage = "https://github.com/MatchaChoco010/egui-ash"
+homepage = "https://github.com/ryco117/egui-ash"
 readme = "README.md"
 documentation = "https://docs.rs/egui-ash"
-repository = "https://github.com/MatchaChoco010/egui-ash"
+repository = "https://github.com/ryco117/egui-ash"
 categories = ["gui"]
 keywords = ["gui", "egui", "ash", "vulkan", "winit"]
 include = [
@@ -42,25 +42,25 @@ wayland = ["egui-winit/wayland"]
 x11 = ["egui-winit/x11"]
 
 [dependencies]
-anyhow = "1.0.75"
+anyhow = "1.0.90"
 ash = { version = "0.38.0", default-features = false }
 ash-window = "0.13.0"
-bytemuck = "1.14.0"
+bytemuck = "1.19.0"
 directories-next = { version = "2.0.0", optional = true }
-egui = "0.28.1"
-egui-winit = "0.28.1"
+egui = "0.29.1"
+egui-winit = "0.29.1"
 gpu-allocator = { version = "0.27.0", default-features = false, features = ["vulkan"], optional = true }
-log = "0.4.20"
+log = "0.4.22"
 raw-window-handle = "0.6.2"
 ron = { version = "0.8.1", optional = true }
-serde = { version = "1.0.193", optional = true }
+serde = { version = "1.0.210", optional = true }
 
 [dev-dependencies]
-ash = { version = "0.38.0", default-features = false, features = ["linked", "debug"] }
-egui_extras = { version = "0.28.1", features = ["all_loaders"] }
+ash = { version = "0.38.0", default-features = false, features = ["loaded", "debug"] }
+egui_extras = { version = "0.29.1", features = ["all_loaders"] }
 egui-ash = { path = ".", features = ["gpu-allocator", "persistence"] }
-egui_tiles = "0.9.0"
-glam = "0.28.0"
-image = { version = "0.25.1", default-features = false, features = ["png", "jpeg", "bmp"] }
-log = "0.4.20"
-tobj = "4.0.0"
+egui_tiles = "0.10.1"
+glam = "0.29.0"
+image = { version = "0.25.4", default-features = false, features = ["png", "jpeg", "bmp"] }
+log = "0.4.22"
+tobj = "4.0.2"

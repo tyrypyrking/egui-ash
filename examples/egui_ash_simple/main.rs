@@ -47,7 +47,7 @@ impl App for MyApp {
             ui.horizontal(|ui| {
                 ui.label("Theme");
                 let id = ui.make_persistent_id("theme_combo_box_side");
-                egui::ComboBox::from_id_source(id)
+                egui::ComboBox::from_id_salt(id)
                     .selected_text(format!("{:?}", self.theme))
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut self.theme, Theme::Dark, "Dark");
@@ -79,7 +79,7 @@ impl App for MyApp {
                     ui.horizontal(|ui| {
                         ui.label("Theme");
                         let id = ui.make_persistent_id("theme_combo_box_window");
-                        egui::ComboBox::from_id_source(id)
+                        egui::ComboBox::from_id_salt(id)
                             .selected_text(format!("{:?}", self.theme))
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(&mut self.theme, Theme::Dark, "Dark");
@@ -152,7 +152,7 @@ impl MyAppCreator {
     }
 
     fn create_entry() -> Entry {
-        ash::Entry::linked()
+        unsafe { ash::Entry::load().expect("Failed to create entry") }
     }
 
     fn create_instance(

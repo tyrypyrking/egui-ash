@@ -4,10 +4,7 @@ use egui::{
 };
 #[cfg(feature = "accesskit")]
 use egui_winit::accesskit_winit::ActionRequestEvent;
-use egui_winit::winit::{
-    self,
-    event_loop::{EventLoop, EventLoopWindowTarget},
-};
+use egui_winit::winit::{self, event_loop::ActiveEventLoop};
 use std::time::Instant;
 use std::{
     collections::HashMap,
@@ -24,8 +21,8 @@ use crate::utils;
 use crate::AshRenderState;
 
 #[derive(Debug)]
+#[cfg(feature = "accesskit")]
 pub(crate) struct IntegrationEvent {
-    #[cfg(feature = "accesskit")]
     pub(crate) accesskit: egui_winit::accesskit_winit::ActionRequestEvent,
 }
 #[cfg(feature = "accesskit")]
@@ -84,11 +81,10 @@ pub(crate) struct Integration<A: Allocator + 'static> {
 impl<A: Allocator + 'static> Integration<A> {
     pub(crate) fn new(
         app_id: &str,
-        event_loop: &EventLoop<IntegrationEvent>,
+        event_loop: &ActiveEventLoop,
         context: egui::Context,
         main_window: winit::window::Window,
         render_state: AshRenderState<A>,
-        clear_color: [f32; 4],
         present_mode: ash::vk::PresentModeKHR,
         receiver: ImageRegistryReceiver,
         #[cfg(feature = "persistence")] storage: Storage,
@@ -104,7 +100,6 @@ impl<A: Allocator + 'static> Integration<A> {
             render_state.swapchain_loader.clone(),
             render_state.queue,
             render_state.command_pool,
-            clear_color,
             present_mode,
         )));
         let renderer = Renderer::new(
@@ -142,6 +137,7 @@ impl<A: Allocator + 'static> Integration<A> {
             egui::ViewportId::ROOT,
             &event_loop,
             Some(main_window.scale_factor() as f32),
+            None,
             Some(max_texture_side),
         );
 
@@ -245,7 +241,7 @@ impl<A: Allocator + 'static> Integration<A> {
         &mut self,
         window_id: winit::window::WindowId,
         window_event: &winit::event::WindowEvent,
-        event_loop: &EventLoopWindowTarget<IntegrationEvent>,
+        event_loop: &ActiveEventLoop,
         follow_system_theme: bool,
         app: &mut impl crate::App,
     ) -> bool {
@@ -317,7 +313,7 @@ impl<A: Allocator + 'static> Integration<A> {
     pub(crate) fn handle_accesskit_event(
         &mut self,
         event: &ActionRequestEvent,
-        event_loop: &EventLoopWindowTarget<IntegrationEvent>,
+        event_loop: &ActiveEventLoop,
         control_flow: &mut winit::event_loop::ControlFlow,
         app: &mut impl crate::App,
     ) {
@@ -335,7 +331,7 @@ impl<A: Allocator + 'static> Integration<A> {
 
     pub(crate) fn run_ui_and_record_paint_cmd(
         &mut self,
-        event_loop: &EventLoopWindowTarget<IntegrationEvent>,
+        event_loop: &ActiveEventLoop,
         app: &mut impl crate::App,
         window_id: winit::window::WindowId,
         create_swapchain_internal: bool,
@@ -528,7 +524,7 @@ impl<A: Allocator + 'static> Integration<A> {
 
     pub(crate) fn paint(
         &mut self,
-        event_loop: &EventLoopWindowTarget<IntegrationEvent>,
+        event_loop: &ActiveEventLoop,
         window_id: winit::window::WindowId,
         app: &mut impl crate::App,
     ) {
@@ -573,11 +569,7 @@ impl<A: Allocator + 'static> Integration<A> {
         }
     }
 
-    pub(crate) fn paint_all(
-        &mut self,
-        event_loop: &EventLoopWindowTarget<IntegrationEvent>,
-        app: &mut impl crate::App,
-    ) {
+    pub(crate) fn paint_all(&mut self, event_loop: &ActiveEventLoop, app: &mut impl crate::App) {
         let window_ids = {
             let window_id_to_viewport_id = self.window_id_to_viewport_id.lock().unwrap();
             window_id_to_viewport_id.keys().copied().collect::<Vec<_>>()
@@ -631,7 +623,7 @@ impl<A: Allocator + 'static> Integration<A> {
 
 fn initialize_or_update_viewport<'vp>(
     context: &egui::Context,
-    event_loop: &EventLoopWindowTarget<IntegrationEvent>,
+    event_loop: &ActiveEventLoop,
     window_id_to_viewport_id: &mut HashMap<winit::window::WindowId, egui::ViewportId>,
     max_texture_side: usize,
     viewports: &'vp mut ViewportIdMap<Viewport>,
@@ -671,6 +663,7 @@ fn initialize_or_update_viewport<'vp>(
                 ids.this,
                 event_loop,
                 Some(window.scale_factor() as f32),
+                None,
                 Some(max_texture_side),
             );
             entry.insert(Viewport {
@@ -717,6 +710,7 @@ fn initialize_or_update_viewport<'vp>(
                     ids.this,
                     event_loop,
                     Some(viewport.window.scale_factor() as f32),
+                    None,
                     Some(max_texture_side),
                 );
                 viewport.is_first_frame = true;
@@ -738,7 +732,7 @@ fn initialize_or_update_viewport<'vp>(
 }
 
 fn create_viewport_window(
-    event_loop: &EventLoopWindowTarget<IntegrationEvent>,
+    event_loop: &ActiveEventLoop,
     context: &egui::Context,
     window_id_to_viewport_id: &mut HashMap<winit::window::WindowId, egui::ViewportId>,
     viewport_id: egui::ViewportId,
@@ -768,10 +762,9 @@ fn create_viewport_window(
         }
     }
 
-    let window = egui_winit::create_winit_window_builder(context, event_loop, builder.clone())
-        .with_visible(false)
-        .build(event_loop)
-        .expect("Failed to create window");
+    let window =
+        egui_winit::create_window(context, event_loop, &builder.clone().with_visible(false))
+            .expect("Failed to create window");
 
     egui_winit::apply_viewport_builder_to_window(context, &window, &builder);
 
@@ -782,7 +775,7 @@ fn create_viewport_window(
 
 #[cfg(feature = "persistence")]
 fn restore_main_window(
-    event_loop: &EventLoopWindowTarget<IntegrationEvent>,
+    event_loop: &ActiveEventLoop,
     context: &egui::Context,
     main_window: &winit::window::Window,
     storage: &Storage,
@@ -808,6 +801,8 @@ fn restore_main_window(
     }
 }
 
+/// # Safety
+/// The `event_loop` must outlive the returned closure.
 fn immediate_viewport_renderer(
     presenters: &Arc<Mutex<Presenters>>,
     renderer: &Arc<Mutex<Renderer<impl Allocator>>>,
@@ -817,7 +812,7 @@ fn immediate_viewport_renderer(
     max_texture_side: usize,
     #[cfg(feature = "persistence")] storage: &Storage,
     #[cfg(feature = "persistence")] persistent_windows: bool,
-    event_loop: &EventLoop<IntegrationEvent>,
+    event_loop: &ActiveEventLoop,
 ) -> impl for<'b, 'a> Fn(&'b egui::Context, egui::ImmediateViewport<'a>) {
     let presenters = presenters.clone();
     let renderer = renderer.clone();
@@ -829,9 +824,10 @@ fn immediate_viewport_renderer(
     #[cfg(feature = "persistence")]
     let persistent_windows = persistent_windows;
 
-    let event_loop: *const EventLoop<IntegrationEvent> = event_loop;
+    // TODO: Avoid using unsafe pointer logic and instead use lifetime annotations.
+    let event_loop: *const ActiveEventLoop = event_loop;
 
-    move |ctx, immediate_viewport| {
+    move |ctx, mut immediate_viewport| {
         // SAFETY: the event loop lives longer than this callback
         #[allow(unsafe_code)]
         let event_loop = unsafe { event_loop.as_ref().unwrap() };

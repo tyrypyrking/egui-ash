@@ -1,11 +1,6 @@
 # egui-ash
 
-[![Latest version](https://img.shields.io/crates/v/egui-ash.svg)](https://crates.io/crates/egui-ash)
-[![Documentation](https://docs.rs/egui-ash/badge.svg)](https://docs.rs/egui-ash)
-![MIT](https://img.shields.io/badge/license-MIT-blue.svg)
-![Apache2.0](https://img.shields.io/badge/license-Apache2.0-blue.svg)
-[![egui: 0.24.1](https://img.shields.io/badge/egui%20-0.24.1-orange)](https://docs.rs/egui/0.24.1/egui)
-[![ash: 0.37.3](https://img.shields.io/badge/ash%20-0.37.3-orange)](https://docs.rs/ash/0.37.3/ash)
+This is a fork of the (seemingly abandoned) project [here](https://github.com/MatchaChoco010/egui-ash).
 
 [egui](https://github.com/emilk/egui) integration for [ash](https://github.com/MaikKlein/ash) (Vulkan).
 

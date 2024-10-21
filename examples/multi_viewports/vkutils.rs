@@ -34,7 +34,8 @@ unsafe extern "system" fn vulkan_debug_utils_callback(
 }
 
 pub fn create_entry() -> Entry {
-    ash::Entry::linked()
+    // ash::Entry::linked()
+    unsafe { ash::Entry::load().expect("Failed to create entry") }
 }
 
 pub fn create_instance(

@@ -113,7 +113,8 @@ impl MyAppCreator {
     }
 
     fn create_entry() -> Entry {
-        ash::Entry::linked()
+        // ash::Entry::linked()
+        unsafe { ash::Entry::load().expect("Failed to create entry") }
     }
 
     fn create_instance(

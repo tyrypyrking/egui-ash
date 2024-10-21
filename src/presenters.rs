@@ -13,9 +13,7 @@ struct Presenter {
     width: u32,
     height: u32,
 
-    device: Device,
     surface: vk::SurfaceKHR,
-    clear_color: [f32; 4],
     present_mode: vk::PresentModeKHR,
 
     swapchain: vk::SwapchainKHR,
@@ -176,7 +174,6 @@ impl Presenter {
         swapchain_loader: &ash::khr::swapchain::Device,
         command_pool: vk::CommandPool,
         window: &winit::window::Window,
-        clear_color: [f32; 4],
         present_mode: vk::PresentModeKHR,
     ) -> Option<Self> {
         let width = window.inner_size().width;
@@ -235,9 +232,7 @@ impl Presenter {
             width,
             height,
 
-            device,
             surface,
-            clear_color,
             present_mode,
 
             swapchain,
@@ -520,7 +515,6 @@ pub struct Presenters {
     queue: vk::Queue,
     command_pool: vk::CommandPool,
     presenters: HashMap<egui::ViewportId, Presenter>,
-    clear_color: [f32; 4],
     present_mode: vk::PresentModeKHR,
 }
 impl Presenters {
@@ -533,7 +527,6 @@ impl Presenters {
         swapchain_loader: ash::khr::swapchain::Device,
         queue: vk::Queue,
         command_pool: vk::CommandPool,
-        clear_color: [f32; 4],
         present_mode: vk::PresentModeKHR,
     ) -> Self {
         Self {
@@ -546,7 +539,6 @@ impl Presenters {
             queue,
             command_pool,
             presenters: HashMap::new(),
-            clear_color,
             present_mode,
         }
     }
@@ -585,7 +577,6 @@ impl Presenters {
                 &self.swapchain_loader,
                 self.command_pool,
                 window,
-                self.clear_color,
                 self.present_mode,
             ) {
                 self.presenters.insert(viewport_id, presenter);

@@ -78,7 +78,7 @@ pub struct CreationContext<'a> {
     pub exit_signal: ExitSignal,
 }
 
-/// vulkan objects required for drawing ash.
+/// Vulkan objects required for drawing ash.
 /// You should return this struct from [`AppCreator::create()`].
 pub struct AshRenderState<A: Allocator + 'static> {
     pub entry: Entry,
