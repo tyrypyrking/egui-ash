@@ -1,8 +1,9 @@
 # egui-ash
 
-This is a fork of the (seemingly abandoned) project [here](https://github.com/MatchaChoco010/egui-ash).
+This is a fork of the (seemingly abandoned) original [egui-ash](https://github.com/MatchaChoco010/egui-ash).
 
-[egui](https://github.com/emilk/egui) integration for [ash](https://github.com/MaikKlein/ash) (Vulkan).
+It provides [egui](https://github.com/emilk/egui) integration for [ash](https://github.com/ash-rs/ash) Vulkan
+bindings and [winit](https://github.com/rust-windowing/winit) window management.
 
 This crate natively supports the multi-viewports feature added since version 0.24 of egui.
 

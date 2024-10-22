@@ -493,13 +493,13 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
         });
     }
 
-    // size for vertex buffer which egui-ash uses
-    fn vertex_buffer_size() -> u64 {
+    /// Size for vertex buffer which `egui-ash` uses.
+    const fn vertex_buffer_size() -> u64 {
         1024 * 1024 * 4
     }
 
-    // size for index buffer which egui-ash uses
-    fn index_buffer_size() -> u64 {
+    /// Size for index buffer which `egui-ash` uses.
+    const fn index_buffer_size() -> u64 {
         1024 * 1024 * 4
     }
 
@@ -1550,6 +1550,9 @@ impl UserTextures {
     }
 }
 
+/// Set a sane limit for the number of active textures.
+const MAX_ACTIVE_TEXTURES: u32 = 2048;
+
 pub(crate) struct Renderer<A: Allocator + 'static> {
     device: Device,
     descriptor_pool: vk::DescriptorPool,
@@ -1566,11 +1569,11 @@ impl<A: Allocator + 'static> Renderer<A> {
             device.create_descriptor_pool(
                 &vk::DescriptorPoolCreateInfo::default()
                     .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
-                    .max_sets(1024)
+                    .max_sets(MAX_ACTIVE_TEXTURES)
                     .pool_sizes(std::slice::from_ref(
                         &vk::DescriptorPoolSize::default()
                             .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                            .descriptor_count(1024),
+                            .descriptor_count(MAX_ACTIVE_TEXTURES),
                     )),
                 None,
             )

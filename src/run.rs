@@ -69,7 +69,7 @@ impl ExitSignal {
 ///
 /// ```
 /// fn main() {
-///     egui_winit_ash::run("my_app", MyAppCreator, RunOption::default());
+///     egui_ash::run("my_app", MyAppCreator, RunOption::default());
 /// }
 /// ```
 pub fn run<C: AppCreator<A> + 'static, A: Allocator + 'static>(
@@ -131,9 +131,11 @@ impl<A: Allocator + 'static, C: AppCreator<A>> winit::application::ApplicationHa
     /// Initialize the application, including the main window, if not already running.
     /// Otherwise, signal that the application is being resumed.
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // Check whether the app is being initialized or strictly resumed.
         let creator = match &mut self.state {
             AppState::Starting { creator } => creator,
             AppState::Running { app, integration } => {
+                // Let the app know that it is being resumed.
                 log::info!("App resuming...");
                 let app_event = event::Event::AppEvent {
                     event: event::AppEvent::Resumed,
@@ -291,6 +293,7 @@ impl<A: Allocator + 'static, C: AppCreator<A>> winit::application::ApplicationHa
             log::warn!("Window event ${event:?} received before app started");
             return;
         };
+
         let consumed = integration.handle_window_event(
             window_id,
             &event,
