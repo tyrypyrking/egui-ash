@@ -53,9 +53,9 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
     fn create_render_pass(device: &Device, surface_format: vk::Format) -> vk::RenderPass {
         unsafe {
             device.create_render_pass(
-                &vk::RenderPassCreateInfo::builder()
+                &vk::RenderPassCreateInfo::default()
                     .attachments(std::slice::from_ref(
-                        &vk::AttachmentDescription::builder()
+                        &vk::AttachmentDescription::default()
                             .format(surface_format)
                             .samples(vk::SampleCountFlags::TYPE_1)
                             .load_op(vk::AttachmentLoadOp::LOAD)
@@ -66,23 +66,21 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
                             .final_layout(vk::ImageLayout::PRESENT_SRC_KHR),
                     ))
                     .subpasses(std::slice::from_ref(
-                        &vk::SubpassDescription::builder()
+                        &vk::SubpassDescription::default()
                             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
                             .color_attachments(std::slice::from_ref(
-                                &vk::AttachmentReference::builder()
+                                &vk::AttachmentReference::default()
                                     .attachment(0)
                                     .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
                             )),
                     ))
-                    .dependencies(std::slice::from_ref(
-                        &vk::SubpassDependency::builder()
-                            .src_subpass(vk::SUBPASS_EXTERNAL)
-                            .dst_subpass(0)
-                            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                            .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-                            .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT),
-                    )),
+                    .dependencies(&[vk::SubpassDependency::default()
+                        .src_subpass(vk::SUBPASS_EXTERNAL)
+                        .dst_subpass(0)
+                        .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                        .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                        .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+                        .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)]),
                 None,
             )
         }
@@ -95,10 +93,10 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
     ) -> vk::PipelineLayout {
         unsafe {
             device.create_pipeline_layout(
-                &vk::PipelineLayoutCreateInfo::builder()
+                &vk::PipelineLayoutCreateInfo::default()
                     .set_layouts(&[descriptor_set_layout])
                     .push_constant_ranges(std::slice::from_ref(
-                        &vk::PushConstantRange::builder()
+                        &vk::PushConstantRange::default()
                             .stage_flags(vk::ShaderStageFlags::VERTEX)
                             .offset(0)
                             .size(std::mem::size_of::<f32>() as u32 * 2),
@@ -116,26 +114,23 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
     ) -> vk::Pipeline {
         let attributes = [
             // position
-            vk::VertexInputAttributeDescription::builder()
+            vk::VertexInputAttributeDescription::default()
                 .binding(0)
                 .offset(0)
                 .location(0)
-                .format(vk::Format::R32G32_SFLOAT)
-                .build(),
+                .format(vk::Format::R32G32_SFLOAT),
             // uv
-            vk::VertexInputAttributeDescription::builder()
+            vk::VertexInputAttributeDescription::default()
                 .binding(0)
                 .offset(8)
                 .location(1)
-                .format(vk::Format::R32G32_SFLOAT)
-                .build(),
+                .format(vk::Format::R32G32_SFLOAT),
             // color
-            vk::VertexInputAttributeDescription::builder()
+            vk::VertexInputAttributeDescription::default()
                 .binding(0)
                 .offset(16)
                 .location(2)
-                .format(vk::Format::R8G8B8A8_UNORM)
-                .build(),
+                .format(vk::Format::R8G8B8A8_UNORM),
         ];
 
         let vertex_shader_module = {
@@ -160,24 +155,22 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
         };
         let main_function_name = CString::new("main").unwrap();
         let pipeline_shader_stages = [
-            vk::PipelineShaderStageCreateInfo::builder()
+            vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::VERTEX)
                 .module(vertex_shader_module)
-                .name(&main_function_name)
-                .build(),
-            vk::PipelineShaderStageCreateInfo::builder()
+                .name(&main_function_name),
+            vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::FRAGMENT)
                 .module(fragment_shader_module)
-                .name(&main_function_name)
-                .build(),
+                .name(&main_function_name),
         ];
 
-        let input_assembly_info = vk::PipelineInputAssemblyStateCreateInfo::builder()
+        let input_assembly_info = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-        let viewport_info = vk::PipelineViewportStateCreateInfo::builder()
+        let viewport_info = vk::PipelineViewportStateCreateInfo::default()
             .viewport_count(1)
             .scissor_count(1);
-        let rasterization_info = vk::PipelineRasterizationStateCreateInfo::builder()
+        let rasterization_info = vk::PipelineRasterizationStateCreateInfo::default()
             .depth_clamp_enable(false)
             .rasterizer_discard_enable(false)
             .polygon_mode(vk::PolygonMode::FILL)
@@ -185,7 +178,7 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(false)
             .line_width(1.0);
-        let depth_stencil_info = vk::PipelineDepthStencilStateCreateInfo::builder()
+        let depth_stencil_info = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(false)
             .depth_write_enable(false)
             .depth_compare_op(vk::CompareOp::ALWAYS)
@@ -205,21 +198,21 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
             });
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dynamic_state_info =
-            vk::PipelineDynamicStateCreateInfo::builder().dynamic_states(&dynamic_states);
-        let multisample_info = vk::PipelineMultisampleStateCreateInfo::builder()
+            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let multisample_info = vk::PipelineMultisampleStateCreateInfo::default()
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
         let pipeline = unsafe {
             device.create_graphics_pipelines(
                 vk::PipelineCache::null(),
                 std::slice::from_ref(
-                    &vk::GraphicsPipelineCreateInfo::builder()
+                    &vk::GraphicsPipelineCreateInfo::default()
                         .stages(&pipeline_shader_stages)
                         .vertex_input_state(
-                            &vk::PipelineVertexInputStateCreateInfo::builder()
+                            &vk::PipelineVertexInputStateCreateInfo::default()
                                 .vertex_attribute_descriptions(&attributes)
                                 .vertex_binding_descriptions(std::slice::from_ref(
-                                    &vk::VertexInputBindingDescription::builder()
+                                    &vk::VertexInputBindingDescription::default()
                                         .binding(0)
                                         .input_rate(vk::VertexInputRate::VERTEX)
                                         .stride(
@@ -234,9 +227,9 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
                         .multisample_state(&multisample_info)
                         .depth_stencil_state(&depth_stencil_info)
                         .color_blend_state(
-                            &vk::PipelineColorBlendStateCreateInfo::builder().attachments(
+                            &vk::PipelineColorBlendStateCreateInfo::default().attachments(
                                 std::slice::from_ref(
-                                    &vk::PipelineColorBlendAttachmentState::builder()
+                                    &vk::PipelineColorBlendAttachmentState::default()
                                         .color_write_mask(
                                             vk::ColorComponentFlags::R
                                                 | vk::ColorComponentFlags::G
@@ -280,12 +273,12 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
             .map(|swapchain_image| unsafe {
                 device
                     .create_image_view(
-                        &vk::ImageViewCreateInfo::builder()
+                        &vk::ImageViewCreateInfo::default()
                             .image(*swapchain_image)
                             .view_type(vk::ImageViewType::TYPE_2D)
                             .format(surface_format)
                             .subresource_range(
-                                *vk::ImageSubresourceRange::builder()
+                                vk::ImageSubresourceRange::default()
                                     .aspect_mask(vk::ImageAspectFlags::COLOR)
                                     .base_mip_level(0)
                                     .level_count(1)
@@ -303,7 +296,7 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
                 let attachments = &[image_views];
                 device
                     .create_framebuffer(
-                        &vk::FramebufferCreateInfo::builder()
+                        &vk::FramebufferCreateInfo::default()
                             .render_pass(render_pass)
                             .attachments(attachments)
                             .width(width)
@@ -336,7 +329,7 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
             let vertex_buffer = unsafe {
                 device
                     .create_buffer(
-                        &vk::BufferCreateInfo::builder()
+                        &vk::BufferCreateInfo::default()
                             .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
                             .sharing_mode(vk::SharingMode::EXCLUSIVE)
                             .size(Self::vertex_buffer_size()),
@@ -367,7 +360,7 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
             let index_buffer = unsafe {
                 device
                     .create_buffer(
-                        &vk::BufferCreateInfo::builder()
+                        &vk::BufferCreateInfo::default()
                             .usage(vk::BufferUsageFlags::INDEX_BUFFER)
                             .sharing_mode(vk::SharingMode::EXCLUSIVE)
                             .size(Self::index_buffer_size()),
@@ -582,13 +575,13 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
                     unsafe {
                         this.device.cmd_begin_render_pass(
                             cmd,
-                            &vk::RenderPassBeginInfo::builder()
+                            &vk::RenderPassBeginInfo::default()
                                 .render_pass(state.render_pass)
                                 .framebuffer(state.framebuffers[index])
                                 .clear_values(&[])
                                 .render_area(
-                                    *vk::Rect2D::builder().extent(
-                                        *vk::Extent2D::builder()
+                                    vk::Rect2D::default().extent(
+                                        vk::Extent2D::default()
                                             .width(state.width)
                                             .height(state.height),
                                     ),
@@ -739,7 +732,7 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
                                 cmd,
                                 0,
                                 std::slice::from_ref(
-                                    &vk::Rect2D::builder()
+                                    &vk::Rect2D::default()
                                         .offset(vk::Offset2D {
                                             x: min.x.round() as i32,
                                             y: min.y.round() as i32,
@@ -754,7 +747,7 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
                                 cmd,
                                 0,
                                 std::slice::from_ref(
-                                    &vk::Viewport::builder()
+                                    &vk::Viewport::default()
                                         .x(0.0)
                                         .y(0.0)
                                         .width(state.physical_width as f32)
@@ -850,7 +843,7 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
     fn create_sampler(device: &Device) -> vk::Sampler {
         unsafe {
             device.create_sampler(
-                &vk::SamplerCreateInfo::builder()
+                &vk::SamplerCreateInfo::default()
                     .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
                     .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
                     .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
@@ -915,7 +908,7 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
             unsafe {
                 self.device
                     .create_command_pool(
-                        &vk::CommandPoolCreateInfo::builder()
+                        &vk::CommandPoolCreateInfo::default()
                             .queue_family_index(self.queue_family_index),
                         None,
                     )
@@ -926,7 +919,7 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
             unsafe {
                 self.device
                     .allocate_command_buffers(
-                        &vk::CommandBufferAllocateInfo::builder()
+                        &vk::CommandBufferAllocateInfo::default()
                             .command_buffer_count(1u32)
                             .command_pool(cmd_pool)
                             .level(vk::CommandBufferLevel::PRIMARY),
@@ -936,13 +929,13 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
         };
         let cmd_fence = unsafe {
             self.device
-                .create_fence(&vk::FenceCreateInfo::builder(), None)
+                .create_fence(&vk::FenceCreateInfo::default(), None)
                 .unwrap()
         };
 
         let (staging_buffer, staging_allocation) = {
             let buffer_size = data.len() as vk::DeviceSize;
-            let buffer_info = vk::BufferCreateInfo::builder()
+            let buffer_info = vk::BufferCreateInfo::default()
                 .size(buffer_size)
                 .usage(vk::BufferUsageFlags::TRANSFER_SRC);
             let texture_buffer = unsafe { self.device.create_buffer(&buffer_info, None) }.unwrap();
@@ -976,7 +969,7 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
             };
             let handle = unsafe {
                 self.device.create_image(
-                    &vk::ImageCreateInfo::builder()
+                    &vk::ImageCreateInfo::default()
                         .array_layers(1)
                         .extent(extent)
                         .flags(vk::ImageCreateFlags::empty())
@@ -1017,7 +1010,7 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
             unsafe {
                 self.device
                     .create_image_view(
-                        &vk::ImageViewCreateInfo::builder()
+                        &vk::ImageViewCreateInfo::default()
                             .components(vk::ComponentMapping::default())
                             .flags(vk::ImageViewCreateFlags::empty())
                             .format(vk::Format::R8G8B8A8_UNORM)
@@ -1041,7 +1034,7 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
             self.device
                 .begin_command_buffer(
                     cmd,
-                    &vk::CommandBufferBeginInfo::builder()
+                    &vk::CommandBufferBeginInfo::default()
                         .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                 )
                 .unwrap();
@@ -1049,8 +1042,8 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
         // Transition texture image for transfer dst
         utils::insert_image_memory_barrier(
             &self.device,
-            &cmd,
-            &texture_image,
+            cmd,
+            texture_image,
             vk::QUEUE_FAMILY_IGNORED,
             vk::QUEUE_FAMILY_IGNORED,
             vk::AccessFlags::NONE_KHR,
@@ -1074,7 +1067,7 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
                 texture_image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 std::slice::from_ref(
-                    &vk::BufferImageCopy::builder()
+                    &vk::BufferImageCopy::default()
                         .buffer_offset(0)
                         .buffer_row_length(delta.image.width() as u32)
                         .buffer_image_height(delta.image.height() as u32)
@@ -1095,8 +1088,8 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
         }
         utils::insert_image_memory_barrier(
             &self.device,
-            &cmd,
-            &texture_image,
+            cmd,
+            texture_image,
             vk::QUEUE_FAMILY_IGNORED,
             vk::QUEUE_FAMILY_IGNORED,
             vk::AccessFlags::TRANSFER_WRITE,
@@ -1122,7 +1115,7 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
             self.device
                 .queue_submit(
                     self.queue,
-                    std::slice::from_ref(&vk::SubmitInfo::builder().command_buffers(&cmd_buffs)),
+                    std::slice::from_ref(&vk::SubmitInfo::default().command_buffers(&cmd_buffs)),
                     cmd_fence,
                 )
                 .unwrap();
@@ -1136,7 +1129,7 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
         if let Some(pos) = delta.pos {
             // Blit texture data to existing texture if delta pos exists (e.g. font changed)
             let existing_texture = self.texture_images.get(&texture_id);
-            if let Some(existing_texture) = existing_texture {
+            if let Some(&existing_texture) = existing_texture {
                 let extent = vk::Extent3D {
                     width: delta.image.width() as u32,
                     height: delta.image.height() as u32,
@@ -1152,7 +1145,7 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
                     self.device
                         .begin_command_buffer(
                             cmd,
-                            &vk::CommandBufferBeginInfo::builder()
+                            &vk::CommandBufferBeginInfo::default()
                                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                         )
                         .unwrap();
@@ -1160,7 +1153,7 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
                     // Transition existing image for transfer dst
                     utils::insert_image_memory_barrier(
                         &self.device,
-                        &cmd,
+                        cmd,
                         existing_texture,
                         vk::QUEUE_FAMILY_IGNORED,
                         vk::QUEUE_FAMILY_IGNORED,
@@ -1181,8 +1174,8 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
                     // Transition new image for transfer src
                     utils::insert_image_memory_barrier(
                         &self.device,
-                        &cmd,
-                        &texture_image,
+                        cmd,
+                        texture_image,
                         vk::QUEUE_FAMILY_IGNORED,
                         vk::QUEUE_FAMILY_IGNORED,
                         vk::AccessFlags::SHADER_READ,
@@ -1237,7 +1230,7 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
                         cmd,
                         texture_image,
                         vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                        *existing_texture,
+                        existing_texture,
                         vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                         &[region],
                         vk::Filter::NEAREST,
@@ -1246,7 +1239,7 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
                     // Transition existing image for shader read
                     utils::insert_image_memory_barrier(
                         &self.device,
-                        &cmd,
+                        cmd,
                         existing_texture,
                         vk::QUEUE_FAMILY_IGNORED,
                         vk::QUEUE_FAMILY_IGNORED,
@@ -1270,7 +1263,7 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
                         .queue_submit(
                             self.queue,
                             std::slice::from_ref(
-                                &vk::SubmitInfo::builder().command_buffers(&cmd_buffs),
+                                &vk::SubmitInfo::default().command_buffers(&cmd_buffs),
                             ),
                             cmd_fence,
                         )
@@ -1295,7 +1288,7 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
                 unsafe {
                     self.device
                         .allocate_descriptor_sets(
-                            &vk::DescriptorSetAllocateInfo::builder()
+                            &vk::DescriptorSetAllocateInfo::default()
                                 .descriptor_pool(self.descriptor_pool)
                                 .set_layouts(&[self.descriptor_set_layout]),
                         )
@@ -1305,13 +1298,13 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
             unsafe {
                 self.device.update_descriptor_sets(
                     std::slice::from_ref(
-                        &vk::WriteDescriptorSet::builder()
+                        &vk::WriteDescriptorSet::default()
                             .dst_set(dsc_set)
                             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                             .dst_array_element(0_u32)
                             .dst_binding(0_u32)
                             .image_info(std::slice::from_ref(
-                                &vk::DescriptorImageInfo::builder()
+                                &vk::DescriptorImageInfo::default()
                                     .image_view(texture_image_view)
                                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                                     .sampler(self.sampler),
@@ -1488,7 +1481,7 @@ impl UserTextures {
                     id,
                     self.device
                         .allocate_descriptor_sets(
-                            &vk::DescriptorSetAllocateInfo::builder()
+                            &vk::DescriptorSetAllocateInfo::default()
                                 .descriptor_pool(self.descriptor_pool)
                                 .set_layouts(&[self.descriptor_set_layout]),
                         )
@@ -1500,13 +1493,13 @@ impl UserTextures {
         unsafe {
             self.device.update_descriptor_sets(
                 std::slice::from_ref(
-                    &vk::WriteDescriptorSet::builder()
+                    &vk::WriteDescriptorSet::default()
                         .dst_set(*dsc_set)
                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                         .dst_array_element(0_u32)
                         .dst_binding(0_u32)
                         .image_info(std::slice::from_ref(
-                            &vk::DescriptorImageInfo::builder()
+                            &vk::DescriptorImageInfo::default()
                                 .image_view(image_view)
                                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                                 .sampler(sampler),
@@ -1572,11 +1565,11 @@ impl<A: Allocator + 'static> Renderer<A> {
     fn create_descriptor_pool(device: &Device) -> vk::DescriptorPool {
         unsafe {
             device.create_descriptor_pool(
-                &vk::DescriptorPoolCreateInfo::builder()
+                &vk::DescriptorPoolCreateInfo::default()
                     .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
                     .max_sets(1024)
                     .pool_sizes(std::slice::from_ref(
-                        &vk::DescriptorPoolSize::builder()
+                        &vk::DescriptorPoolSize::default()
                             .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                             .descriptor_count(1024),
                     )),
@@ -1589,8 +1582,8 @@ impl<A: Allocator + 'static> Renderer<A> {
     fn create_descriptor_set_layout(device: &Device) -> vk::DescriptorSetLayout {
         unsafe {
             device.create_descriptor_set_layout(
-                &vk::DescriptorSetLayoutCreateInfo::builder().bindings(std::slice::from_ref(
-                    &vk::DescriptorSetLayoutBinding::builder()
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(std::slice::from_ref(
+                    &vk::DescriptorSetLayoutBinding::default()
                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                         .descriptor_count(1)
                         .binding(0)
