@@ -1,14 +1,10 @@
 use ash::vk::DebugUtilsMessengerEXT;
-use ash::{
-    extensions::{
-        ext::DebugUtils,
-        khr::{Surface, Swapchain},
-    },
-    vk, Device, Entry, Instance,
+use ash::{ext::debug_utils, vk, Device, Entry, Instance};
+use egui_ash::{
+    raw_window_handle::{HasDisplayHandle as _, HasWindowHandle as _},
+    winit, App, AppCreator, AshRenderState, CreationContext, RunOption,
 };
-use egui_ash::{winit, App, AppCreator, AshRenderState, CreationContext, RunOption};
 use gpu_allocator::vulkan::*;
-use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use std::{
     collections::HashSet,
     ffi::CString,
@@ -20,11 +16,11 @@ struct MyApp {
     entry: Entry,
     instance: Instance,
     device: Device,
-    debug_utils_loader: DebugUtils,
+    debug_utils_loader: debug_utils::Instance,
     debug_messenger: vk::DebugUtilsMessengerEXT,
     physical_device: vk::PhysicalDevice,
-    surface_loader: Surface,
-    swapchain_loader: Swapchain,
+    surface_loader: ash::khr::surface::Instance,
+    swapchain_loader: ash::khr::swapchain::Device,
     surface: vk::SurfaceKHR,
     queue: vk::Queue,
     command_pool: vk::CommandPool,
@@ -91,14 +87,14 @@ impl MyAppCreator {
     }
 
     fn create_entry() -> Entry {
-        Entry::linked()
+        ash::Entry::linked()
     }
 
     fn create_instance(
         required_instance_extensions: &[CString],
         entry: &Entry,
-    ) -> (Instance, DebugUtils, DebugUtilsMessengerEXT) {
-        let mut debug_utils_messenger_create_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
+    ) -> (Instance, debug_utils::Instance, DebugUtilsMessengerEXT) {
+        let mut debug_utils_messenger_create_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
             .flags(vk::DebugUtilsMessengerCreateFlagsEXT::empty())
             .message_severity(
                 vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
@@ -111,15 +107,14 @@ impl MyAppCreator {
                     | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
                     | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
             )
-            .pfn_user_callback(Some(Self::vulkan_debug_utils_callback))
-            .build();
+            .pfn_user_callback(Some(Self::vulkan_debug_utils_callback));
 
         let app_name = std::ffi::CString::new("egui-ash example simple").unwrap();
-        let app_info = vk::ApplicationInfo::builder()
+        let app_info = vk::ApplicationInfo::default()
             .application_name(&app_name)
             .application_version(vk::make_api_version(1, 0, 0, 0))
             .api_version(vk::API_VERSION_1_0);
-        let mut extension_names = vec![DebugUtils::name().as_ptr()];
+        let mut extension_names = vec![debug_utils::NAME.as_ptr()];
         for ext in required_instance_extensions {
             let name = ext.as_ptr();
             extension_names.push(name);
@@ -132,7 +127,7 @@ impl MyAppCreator {
             .iter()
             .map(|l| l.as_ptr())
             .collect::<Vec<*const i8>>();
-        let instance_create_info = vk::InstanceCreateInfo::builder()
+        let instance_create_info = vk::InstanceCreateInfo::default()
             .push_next(&mut debug_utils_messenger_create_info)
             .application_info(&app_info)
             .enabled_extension_names(&extension_names);
@@ -148,7 +143,7 @@ impl MyAppCreator {
         };
 
         // setup debug utils
-        let debug_utils_loader = DebugUtils::new(&entry, &instance);
+        let debug_utils_loader = debug_utils::Instance::new(&entry, &instance);
         let debug_messenger = if Self::ENABLE_VALIDATION_LAYERS {
             unsafe {
                 debug_utils_loader
@@ -162,12 +157,15 @@ impl MyAppCreator {
         (instance, debug_utils_loader, debug_messenger)
     }
 
-    fn create_surface_loader(entry: &Entry, instance: &Instance) -> Surface {
-        Surface::new(&entry, &instance)
+    fn create_surface_loader(entry: &Entry, instance: &Instance) -> ash::khr::surface::Instance {
+        ash::khr::surface::Instance::new(&entry, &instance)
     }
 
-    fn create_swapchain_loader(instance: &Instance, device: &Device) -> Swapchain {
-        Swapchain::new(&instance, &device)
+    fn create_swapchain_loader(
+        instance: &Instance,
+        device: &Device,
+    ) -> ash::khr::swapchain::Device {
+        ash::khr::swapchain::Device::new(&instance, &device)
     }
 
     fn create_surface(
@@ -179,8 +177,14 @@ impl MyAppCreator {
             ash_window::create_surface(
                 entry,
                 instance,
-                window.raw_display_handle(),
-                window.raw_window_handle(),
+                window
+                    .display_handle()
+                    .expect("Failed to get display handle")
+                    .as_raw(),
+                window
+                    .window_handle()
+                    .expect("Failed to get window handle")
+                    .as_raw(),
                 None,
             )
             .expect("Failed to create surface")
@@ -189,7 +193,7 @@ impl MyAppCreator {
 
     fn create_physical_device(
         instance: &Instance,
-        surface_loader: &Surface,
+        surface_loader: &ash::khr::surface::Instance,
         surface: vk::SurfaceKHR,
         required_device_extensions: &[CString],
     ) -> (vk::PhysicalDevice, vk::PhysicalDeviceMemoryProperties, u32) {
@@ -291,13 +295,12 @@ impl MyAppCreator {
     ) -> (Device, vk::Queue) {
         let queue_priorities = [1.0_f32];
         let mut queue_create_infos = vec![];
-        let queue_create_info = vk::DeviceQueueCreateInfo::builder()
+        let queue_create_info = vk::DeviceQueueCreateInfo::default()
             .queue_family_index(queue_family_index)
-            .queue_priorities(&queue_priorities)
-            .build();
+            .queue_priorities(&queue_priorities);
         queue_create_infos.push(queue_create_info);
 
-        let physical_device_features = vk::PhysicalDeviceFeatures::builder().build();
+        let physical_device_features = vk::PhysicalDeviceFeatures::default();
 
         let enable_extension_names = required_device_extensions
             .iter()
@@ -305,7 +308,7 @@ impl MyAppCreator {
             .collect::<Vec<_>>();
 
         // device create info
-        let device_create_info = vk::DeviceCreateInfo::builder()
+        let device_create_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_create_infos)
             .enabled_features(&physical_device_features)
             .enabled_extension_names(&enable_extension_names);
@@ -324,7 +327,7 @@ impl MyAppCreator {
     }
 
     fn create_command_pool(device: &Device, queue_family_index: u32) -> vk::CommandPool {
-        let command_pool_create_info = vk::CommandPoolCreateInfo::builder()
+        let command_pool_create_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
             .queue_family_index(queue_family_index);
         unsafe {

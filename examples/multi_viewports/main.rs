@@ -1,10 +1,4 @@
-use ash::{
-    extensions::{
-        ext::DebugUtils,
-        khr::{Surface, Swapchain},
-    },
-    vk, Device, Entry, Instance,
-};
+use ash::{ext::debug_utils, vk, Device, Entry, Instance};
 use egui_ash::{
     event, App, AppCreator, AshRenderState, CreationContext, HandleRedraw, RunOption, Theme,
 };
@@ -25,11 +19,11 @@ struct MyApp {
     entry: Arc<Entry>,
     instance: Arc<Instance>,
     device: Arc<Device>,
-    debug_utils_loader: DebugUtils,
+    debug_utils_loader: debug_utils::Instance,
     debug_messenger: vk::DebugUtilsMessengerEXT,
     physical_device: vk::PhysicalDevice,
-    surface_loader: Arc<Surface>,
-    swapchain_loader: Arc<Swapchain>,
+    surface_loader: Arc<ash::khr::surface::Instance>,
+    swapchain_loader: Arc<ash::khr::swapchain::Device>,
 
     triangle_surface: vk::SurfaceKHR,
     model_surface: Option<vk::SurfaceKHR>,
@@ -76,7 +70,7 @@ impl App for MyApp {
         egui::Window::new("My Window")
             .id(egui::Id::new("my_window"))
             .resizable(true)
-            .scroll2([true, true])
+            .scroll([true, true])
             .show(&ctx, |ui| {
                 ui.heading("Multi viewports");
                 ui.label("Hello egui multi viewports!");
@@ -163,7 +157,7 @@ impl App for MyApp {
                         egui::Window::new("My Window")
                             .id(egui::Id::new("deferred-viewport-window"))
                             .resizable(true)
-                            .scroll2([true, true])
+                            .scroll([true, true])
                             .show(&ctx, |ui| {
                                 ui.heading("Deferred Viewport");
                                 ui.label("deferred viewport!");
