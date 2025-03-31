@@ -435,7 +435,7 @@ impl<A: Allocator + 'static> Integration<A> {
                     viewport.ids.this,
                     clipped_primitives,
                     textures_delta,
-                    self.context.zoom_factor(),
+                    viewport.window.scale_factor() as f32 * self.context.zoom_factor(),
                     viewport.window.inner_size(),
                 )
             } else {
