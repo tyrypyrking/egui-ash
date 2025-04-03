@@ -153,7 +153,7 @@ pub fn run<C: AppCreator<A> + 'static, A: Allocator + 'static>(
     )
     .unwrap();
     let instance_extensions = instance_extensions
-        .into_iter()
+        .iter()
         .map(|&ext| unsafe { CStr::from_ptr(ext).to_owned() })
         .collect::<Vec<_>>();
 
@@ -196,7 +196,7 @@ pub fn run<C: AppCreator<A> + 'static, A: Allocator + 'static>(
     event_loop
         .run(move |event, event_loop| {
             event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
-            if let Some(code) = exit_signal_rx.try_recv().ok() {
+            if let Ok(code) = exit_signal_rx.try_recv() {
                 *exit_code_clone.lock().unwrap() = code;
                 event_loop.exit();
                 return;
@@ -214,7 +214,7 @@ pub fn run<C: AppCreator<A> + 'static, A: Allocator + 'static>(
                     let consumed = integration.handle_window_event(
                         window_id,
                         &event,
-                        &event_loop,
+                        event_loop,
                         run_option.follow_system_theme,
                         &mut app,
                     );
@@ -240,7 +240,6 @@ pub fn run<C: AppCreator<A> + 'static, A: Allocator + 'static>(
                         integration.handle_accesskit_event(
                             &integration_event.accesskit,
                             event_loop,
-                            control_flow,
                             &mut app,
                         );
                         let user_event =
@@ -290,5 +289,5 @@ pub fn run<C: AppCreator<A> + 'static, A: Allocator + 'static>(
         })
         .expect("Failed to run event loop");
     let code = exit_code.lock().unwrap();
-    code.clone()
+    *code
 }

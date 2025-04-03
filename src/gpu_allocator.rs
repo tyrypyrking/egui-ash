@@ -7,19 +7,19 @@ use crate::allocator;
 
 impl allocator::Allocation for Allocation {
     unsafe fn memory(&self) -> ash::vk::DeviceMemory {
-        Allocation::memory(&self)
+        Allocation::memory(self)
     }
 
     fn offset(&self) -> u64 {
-        Allocation::offset(&self)
+        Allocation::offset(self)
     }
 
     fn size(&self) -> u64 {
-        Allocation::size(&self)
+        Allocation::size(self)
     }
 
     fn mapped_ptr(&self) -> Option<std::ptr::NonNull<std::ffi::c_void>> {
-        Allocation::mapped_ptr(&self)
+        Allocation::mapped_ptr(self)
     }
 }
 
@@ -45,7 +45,7 @@ impl allocator::AllocationCreateInfo for AllocationCreateDesc<'static> {
         location: Self::MemoryLocation,
         linear: bool,
     ) -> Self {
-        let name = name.unwrap_or("Name not provided".into());
+        let name = name.unwrap_or("Name not provided");
         Self {
             name,
             requirements,

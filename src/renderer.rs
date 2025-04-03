@@ -274,7 +274,7 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
                 device
                     .create_image_view(
                         &vk::ImageViewCreateInfo::default()
-                            .image(swapchain_image.clone())
+                            .image(*swapchain_image)
                             .view_type(vk::ImageViewType::TYPE_2D)
                             .format(surface_format)
                             .subresource_range(
@@ -402,6 +402,7 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn update_swapchain(
         &mut self,
         width: u32,
@@ -711,8 +712,8 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
                         unsafe {
                             let min = clip_rect.min;
                             let min = egui::Pos2 {
-                                x: min.x * state.scale_factor as f32,
-                                y: min.y * state.scale_factor as f32,
+                                x: min.x * state.scale_factor,
+                                y: min.y * state.scale_factor,
                             };
                             let min = egui::Pos2 {
                                 x: f32::clamp(min.x, 0.0, state.physical_width as f32),
@@ -720,8 +721,8 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
                             };
                             let max = clip_rect.max;
                             let max = egui::Pos2 {
-                                x: max.x * state.scale_factor as f32,
-                                y: max.y * state.scale_factor as f32,
+                                x: max.x * state.scale_factor,
+                                y: max.y * state.scale_factor,
                             };
                             let max = egui::Pos2 {
                                 x: f32::clamp(max.x, min.x, state.physical_width as f32),
@@ -1660,7 +1661,7 @@ impl<A: Allocator + 'static> Renderer<A> {
             .keys()
             .filter(|id| !active_viewport_ids.contains(id))
             .filter(|id| id != &&egui::ViewportId::ROOT)
-            .map(|id| id.clone())
+            .copied()
             .collect::<Vec<_>>();
 
         for id in remove_viewports {

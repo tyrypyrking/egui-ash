@@ -2,7 +2,7 @@ use anyhow::Result;
 use ash::{vk, Device, Entry, Instance};
 use egui_winit::winit;
 use raw_window_handle::{HasDisplayHandle as _, HasWindowHandle as _};
-use std::collections::HashMap;
+use std::collections::{hash_map::Entry as HashMapEntry, HashMap};
 
 use crate::{
     renderer::{EguiCommand, SwapchainUpdateInfo},
@@ -53,14 +53,13 @@ impl Presenter {
         };
 
         // select swapchain format
-        let surface_format = surface_formats
+        let surface_format = *surface_formats
             .iter()
             .find(|surface_format| {
                 surface_format.format == vk::Format::B8G8R8A8_UNORM
                     && surface_format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
             })
-            .unwrap_or(&surface_formats[0])
-            .clone();
+            .unwrap_or(&surface_formats[0]);
 
         // select surface present mode
         let surface_present_mode = surface_present_modes
@@ -167,6 +166,7 @@ impl Presenter {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create(
         entry: &Entry,
         instance: &Instance,
@@ -358,7 +358,7 @@ impl Presenter {
         let result = unsafe {
             swapchain_loader.acquire_next_image(
                 self.swapchain,
-                std::u64::MAX,
+                u64::MAX,
                 self.image_available_semaphores[self.current_frame],
                 vk::Fence::null(),
             )
@@ -524,6 +524,7 @@ pub struct Presenters {
     present_mode: vk::PresentModeKHR,
 }
 impl Presenters {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         entry: Entry,
         instance: Instance,
@@ -575,7 +576,7 @@ impl Presenters {
             }
         });
 
-        if self.presenters.get(&viewport_id).is_none() {
+        if let HashMapEntry::Vacant(entry) = self.presenters.entry(viewport_id) {
             if let Some(presenter) = Presenter::create(
                 &self.entry,
                 &self.instance,
@@ -588,7 +589,7 @@ impl Presenters {
                 self.clear_color,
                 self.present_mode,
             ) {
-                self.presenters.insert(viewport_id, presenter);
+                entry.insert(presenter);
             }
         }
     }
@@ -617,7 +618,7 @@ impl Presenters {
             .keys()
             .filter(|id| !active_viewport_ids.contains(id))
             .filter(|id| id != &&egui::ViewportId::ROOT)
-            .map(|id| id.clone())
+            .copied()
             .collect::<Vec<_>>();
 
         for id in remove_viewports {

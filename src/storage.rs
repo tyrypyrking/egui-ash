@@ -137,7 +137,7 @@ impl InnerStorage {
     fn set_windows(&mut self, windows: &HashMap<egui::ViewportId, WindowSettings>) {
         let mut prev_windows = self.get_windows().unwrap_or_default();
         for (id, window) in windows {
-            prev_windows.insert(*id, window.clone());
+            prev_windows.insert(*id, *window);
         }
         self.set_value(STORAGE_WINDOWS_KEY, &prev_windows);
     }

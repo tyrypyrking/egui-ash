@@ -1,6 +1,7 @@
 #[cfg(feature = "persistence")]
 use egui_winit::winit::event_loop::EventLoopWindowTarget;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn insert_image_memory_barrier(
     device: &ash::Device,
     cmd: ash::vk::CommandBuffer,
