@@ -188,6 +188,16 @@ impl MyAppCreator {
             let name = ext.as_ptr();
             extension_names.push(name);
         }
+         #[cfg(any(target_os = "macos", target_os = "ios"))]
+        {
+            extension_names.push(vk::KhrPortabilityEnumerationFn::name().as_ptr());
+            extension_names.push(vk::KhrGetPhysicalDeviceProperties2Fn::name().as_ptr());
+        }
+        let create_flags = if cfg!(any(target_os = "macos", target_os = "ios")) {
+            vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
+        } else {
+            vk::InstanceCreateFlags::default()
+        };
         let raw_layer_names = Self::VALIDATION
             .iter()
             .map(|l| std::ffi::CString::new(*l).unwrap())
@@ -199,6 +209,7 @@ impl MyAppCreator {
         let instance_create_info = vk::InstanceCreateInfo::default()
             .push_next(&mut debug_utils_messenger_create_info)
             .application_info(&app_info)
+            .flags(create_flags)
             .enabled_extension_names(&extension_names);
         let instance_create_info = if Self::ENABLE_VALIDATION_LAYERS {
             instance_create_info.enabled_layer_names(&layer_names)
