@@ -89,7 +89,6 @@ impl<A: Allocator + 'static> Integration<A> {
         context: egui::Context,
         main_window: winit::window::Window,
         render_state: AshRenderState<A>,
-        clear_color: [f32; 4],
         present_mode: ash::vk::PresentModeKHR,
         receiver: ImageRegistryReceiver,
         #[cfg(feature = "persistence")] storage: Storage,
@@ -105,7 +104,6 @@ impl<A: Allocator + 'static> Integration<A> {
             render_state.swapchain_loader.clone(),
             render_state.queue,
             render_state.command_pool,
-            clear_color,
             present_mode,
         )));
         let renderer = Renderer::new(

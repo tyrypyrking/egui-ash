@@ -180,7 +180,6 @@ pub fn run<C: AppCreator<A> + 'static, A: Allocator + 'static>(
         context,
         main_window,
         render_state,
-        run_option.clear_color,
         run_option.present_mode,
         image_registry_receiver,
         #[cfg(feature = "persistence")]
