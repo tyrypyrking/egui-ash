@@ -756,7 +756,7 @@ fn create_viewport_window(
 
         if let Some(window_settings) = window_settings {
             builder =
-                window_settings.initialize_viewport_builder(egui_zoom_factor, &event_loop, builder);
+                window_settings.initialize_viewport_builder(egui_zoom_factor, event_loop, builder);
         }
     }
 

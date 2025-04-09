@@ -40,6 +40,8 @@ struct ViewportRenderer<A: Allocator + 'static> {
     allocator: A,
     state: Arc<Mutex<Option<ViewportRendererState<A>>>>,
 }
+struct VertexIndexBuffers<A: Allocator + 'static>(Vec<vk::Buffer>, Vec<A::Allocation>, Vec<vk::Buffer>, Vec<A::Allocation>);
+
 impl<A: Allocator + 'static> ViewportRenderer<A> {
     fn new(device: Device, descriptor_set_layout: vk::DescriptorSetLayout, allocator: A) -> Self {
         Self {
@@ -315,12 +317,7 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
         device: &Device,
         swapchain_count: usize,
         allocator: &A,
-    ) -> (
-        Vec<vk::Buffer>,
-        Vec<A::Allocation>,
-        Vec<vk::Buffer>,
-        Vec<A::Allocation>,
-    ) {
+    ) -> VertexIndexBuffers<A> {
         let mut vertex_buffers = vec![];
         let mut vertex_buffer_allocations = vec![];
         let mut index_buffers = vec![];
@@ -394,12 +391,7 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
             index_buffer_allocations.push(index_buffer_allocation);
         }
 
-        (
-            vertex_buffers,
-            vertex_buffer_allocations,
-            index_buffers,
-            index_buffer_allocations,
-        )
+        VertexIndexBuffers(vertex_buffers, vertex_buffer_allocations, index_buffers, index_buffer_allocations)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -471,7 +463,7 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
             height,
         );
 
-        let (vertex_buffers, vertex_buffer_allocations, index_buffers, index_buffer_allocations) =
+        let VertexIndexBuffers(vertex_buffers, vertex_buffer_allocations, index_buffers, index_buffer_allocations) =
             Self::create_buffers(&self.device, swapchain_images.len(), &allocator);
 
         // update self
