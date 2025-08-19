@@ -1374,9 +1374,9 @@ dependencies = [
 
 [[package]]
 name = "glam"
-version = "0.28.0"
+version = "0.30.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "779ae4bf7e8421cf91c0b3b64e7e8b40b862fba4d393f59150042de7c4965a94"
+checksum = "f2d1aab06663bdce00d6ca5e5ed586ec8d18033a771906c993a1e3755b368d85"
 
 [[package]]
 name = "gpu-allocator"

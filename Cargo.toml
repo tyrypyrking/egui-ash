@@ -60,7 +60,7 @@ ash = { version = "0.38.0", default-features = false, features = ["linked", "deb
 egui_extras = { version = "0.28.1", features = ["all_loaders"] }
 egui-ash = { path = ".", features = ["gpu-allocator", "persistence"] }
 egui_tiles = "0.9.1"
-glam = "0.28.0"
+glam = "0.30.5"
 image = { version = "0.25.6", default-features = false, features = ["png", "jpeg", "bmp"] }
 log = "0.4.27"
 tobj = "4.0.3"
