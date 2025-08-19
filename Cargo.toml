@@ -42,25 +42,25 @@ wayland = ["egui-winit/wayland"]
 x11 = ["egui-winit/x11"]
 
 [dependencies]
-anyhow = "1.0.75"
+anyhow = "1.0.99"
 ash = { version = "0.38.0", default-features = false }
 ash-window = "0.13.0"
-bytemuck = "1.14.0"
+bytemuck = "1.23.2"
 directories-next = { version = "2.0.0", optional = true }
 egui = "0.28.1"
 egui-winit = "0.28.1"
 gpu-allocator = { version = "0.27.0", default-features = false, features = ["vulkan"], optional = true }
-log = "0.4.20"
+log = "0.4.27"
 raw-window-handle = "0.6.2"
 ron = { version = "0.8.1", optional = true }
-serde = { version = "1.0.193", optional = true }
+serde = { version = "1.0.219", optional = true }
 
 [dev-dependencies]
 ash = { version = "0.38.0", default-features = false, features = ["linked", "debug"] }
 egui_extras = { version = "0.28.1", features = ["all_loaders"] }
 egui-ash = { path = ".", features = ["gpu-allocator", "persistence"] }
-egui_tiles = "0.9.0"
+egui_tiles = "0.9.1"
 glam = "0.28.0"
-image = { version = "0.25.1", default-features = false, features = ["png", "jpeg", "bmp"] }
-log = "0.4.20"
-tobj = "4.0.0"
+image = { version = "0.25.6", default-features = false, features = ["png", "jpeg", "bmp"] }
+log = "0.4.27"
+tobj = "4.0.3"
