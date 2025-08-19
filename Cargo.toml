@@ -52,7 +52,7 @@ egui-winit = "0.28.1"
 gpu-allocator = { version = "0.27.0", default-features = false, features = ["vulkan"], optional = true }
 log = "0.4.27"
 raw-window-handle = "0.6.2"
-ron = { version = "0.8.1", optional = true }
+ron = { version = "0.10.1", optional = true }
 serde = { version = "1.0.219", optional = true }
 
 [dev-dependencies]

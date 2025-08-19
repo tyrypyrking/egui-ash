@@ -3,7 +3,6 @@ use egui_winit::WindowSettings;
 use std::{
     collections::HashMap,
     fmt::Debug,
-    io::Write,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -95,12 +94,9 @@ impl InnerStorage {
 
         match std::fs::File::create(filepath) {
             Ok(file) => {
-                let mut writer = std::io::BufWriter::new(file);
-                let config = Default::default();
+                let config = ron::ser::PrettyConfig::new();
 
-                if let Err(err) = ron::ser::to_writer_pretty(&mut writer, &kv, config)
-                    .and_then(|_| writer.flush().map_err(|err| err.into()))
-                {
+                if let Err(err) = ron::Options::default().to_io_writer_pretty(file, &kv, config) {
                     log::error!("Failed to serialize app state: {}", err);
                 }
             }
