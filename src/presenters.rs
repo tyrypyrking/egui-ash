@@ -13,7 +13,7 @@ struct Presenter {
     width: u32,
     height: u32,
 
-    device: Device,
+    _device: Device,
     surface: vk::SurfaceKHR,
     present_mode: vk::PresentModeKHR,
 
@@ -233,7 +233,7 @@ impl Presenter {
             width,
             height,
 
-            device,
+            _device: device,
             surface,
             present_mode,
 
