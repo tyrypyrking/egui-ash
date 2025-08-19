@@ -83,6 +83,7 @@ pub(crate) struct Integration<A: Allocator + 'static> {
     #[cfg(feature = "persistence")]
     last_auto_save: Instant,
 }
+
 impl<A: Allocator + 'static> Integration<A> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(

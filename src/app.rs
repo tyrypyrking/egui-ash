@@ -10,13 +10,6 @@ use crate::{
     Allocator, ExitSignal,
 };
 
-/// egui theme type.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum Theme {
-    Light,
-    Dark,
-}
-
 /// redraw handler type.
 pub type RedrawHandler = Box<dyn FnOnce(winit::dpi::PhysicalSize<u32>, EguiCommand) + Send>;
 

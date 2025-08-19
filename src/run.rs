@@ -1,4 +1,4 @@
-use egui_winit::winit::{self, event_loop::EventLoopBuilder};
+use egui_winit::winit::{self, event_loop::EventLoopBuilder, window::Theme};
 use raw_window_handle::HasDisplayHandle as _;
 use std::{
     ffi::CStr,
@@ -12,7 +12,7 @@ use crate::{
     event,
     integration::{Integration, IntegrationEvent},
     renderer::ImageRegistry,
-    Allocator, Theme,
+    Allocator,
 };
 #[cfg(feature = "persistence")]
 use crate::{storage, utils};
@@ -182,6 +182,7 @@ pub fn run<C: AppCreator<A> + 'static, A: Allocator + 'static>(
         render_state,
         run_option.present_mode,
         image_registry_receiver,
+        Some(run_option.default_theme),
         #[cfg(feature = "persistence")]
         storage,
         #[cfg(feature = "persistence")]
