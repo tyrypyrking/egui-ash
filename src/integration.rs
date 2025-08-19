@@ -72,6 +72,8 @@ pub(crate) struct Integration<A: Allocator + 'static> {
     focused_viewport: Arc<Mutex<Option<egui::ViewportId>>>,
     max_texture_side: usize,
 
+    theme: Option<winit::window::Theme>,
+
     #[cfg(feature = "persistence")]
     storage: Storage,
     #[cfg(feature = "persistence")]
@@ -91,6 +93,7 @@ impl<A: Allocator + 'static> Integration<A> {
         render_state: AshRenderState<A>,
         present_mode: ash::vk::PresentModeKHR,
         receiver: ImageRegistryReceiver,
+        theme: Option<winit::window::Theme>,
         #[cfg(feature = "persistence")] storage: Storage,
         #[cfg(feature = "persistence")] persistent_windows: bool,
         #[cfg(feature = "persistence")] persistent_egui_memory: bool,
@@ -141,6 +144,7 @@ impl<A: Allocator + 'static> Integration<A> {
             egui::ViewportId::ROOT,
             &event_loop,
             Some(main_window.scale_factor() as f32),
+            theme,
             Some(max_texture_side),
         );
 
@@ -190,6 +194,7 @@ impl<A: Allocator + 'static> Integration<A> {
             &window_id_to_viewport_id,
             &focused_viewport,
             max_texture_side,
+            theme,
             #[cfg(feature = "persistence")]
             &storage,
             #[cfg(feature = "persistence")]
@@ -209,6 +214,8 @@ impl<A: Allocator + 'static> Integration<A> {
             viewports,
             focused_viewport,
             max_texture_side,
+
+            theme,
 
             #[cfg(feature = "persistence")]
             storage,
@@ -459,6 +466,7 @@ impl<A: Allocator + 'static> Integration<A> {
                     output.builder.clone(),
                     output.viewport_ui_cb.clone(),
                     &mut window_initialized,
+                    self.theme,
                     #[cfg(feature = "persistence")]
                     &self.storage,
                     #[cfg(feature = "persistence")]
@@ -633,6 +641,7 @@ fn initialize_or_update_viewport<'vp>(
     mut builder: egui::ViewportBuilder,
     viewport_ui_cb: Option<Arc<dyn Fn(&egui::Context) + Send + Sync>>,
     window_initialized: &mut bool,
+    theme: Option<winit::window::Theme>,
     #[cfg(feature = "persistence")] storage: &Storage,
     #[cfg(feature = "persistence")] persistent_windows: bool,
 ) -> &'vp mut Viewport {
@@ -663,6 +672,7 @@ fn initialize_or_update_viewport<'vp>(
                 ids.this,
                 event_loop,
                 Some(window.scale_factor() as f32),
+                theme,
                 Some(max_texture_side),
             );
             entry.insert(Viewport {
@@ -709,6 +719,7 @@ fn initialize_or_update_viewport<'vp>(
                     ids.this,
                     event_loop,
                     Some(viewport.window.scale_factor() as f32),
+                    theme,
                     Some(max_texture_side),
                 );
                 viewport.is_first_frame = true;
@@ -808,6 +819,7 @@ fn immediate_viewport_renderer(
     window_id_to_viewport_id: &Arc<Mutex<HashMap<winit::window::WindowId, egui::ViewportId>>>,
     focused_viewport: &Arc<Mutex<Option<egui::ViewportId>>>,
     max_texture_side: usize,
+    theme: Option<winit::window::Theme>,
     #[cfg(feature = "persistence")] storage: &Storage,
     #[cfg(feature = "persistence")] persistent_windows: bool,
     event_loop: &EventLoop<IntegrationEvent>,
@@ -847,6 +859,7 @@ fn immediate_viewport_renderer(
                 immediate_viewport.builder,
                 None,
                 &mut window_initialized,
+                theme,
                 #[cfg(feature = "persistence")]
                 &storage,
                 #[cfg(feature = "persistence")]
@@ -918,6 +931,7 @@ fn immediate_viewport_renderer(
                 output.builder.clone(),
                 output.viewport_ui_cb.clone(),
                 &mut window_initialized,
+                theme,
                 #[cfg(feature = "persistence")]
                 &storage,
                 #[cfg(feature = "persistence")]
