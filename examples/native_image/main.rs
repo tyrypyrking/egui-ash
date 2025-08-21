@@ -1,7 +1,7 @@
 use ash::{ext::debug_utils, vk, Device, Entry, Instance};
 use egui_ash::{
     raw_window_handle::{HasDisplayHandle as _, HasWindowHandle as _},
-    winit, App, AppCreator, AshRenderState, CreationContext, RunOption, Theme,
+    winit::{self, window::Theme}, App, AppCreator, AshRenderState, CreationContext, RunOption,
 };
 use gpu_allocator::vulkan::*;
 use std::{

@@ -2,7 +2,7 @@ use ash::{vk, Device, Entry, Instance};
 use egui::FontData;
 use egui_ash::{
     raw_window_handle::{HasDisplayHandle as _, HasWindowHandle as _},
-    winit, App, AppCreator, AshRenderState, CreationContext, ExitSignal, RunOption, Theme,
+    winit::{self, window::Theme}, App, AppCreator, AshRenderState, CreationContext, ExitSignal, RunOption,
 };
 use gpu_allocator::vulkan::*;
 use std::{
