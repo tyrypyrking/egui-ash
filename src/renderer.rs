@@ -891,10 +891,6 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
                     .flat_map(|color| color.to_array())
                     .collect()
             }
-            egui::ImageData::Font(image) => image
-                .srgba_pixels(None)
-                .flat_map(|color| color.to_array())
-                .collect(),
         };
         let cmd_pool = {
             unsafe {
