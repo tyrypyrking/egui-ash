@@ -46,8 +46,8 @@ ash = { version = "0.38.0", default-features = false }
 ash-window = "0.13.0"
 bytemuck = "1.23.2"
 directories-next = { version = "2.0.0", optional = true }
-egui = "0.30.0"
-egui-winit = "0.30.0"
+egui = "0.31.1"
+egui-winit = "0.31.1"
 gpu-allocator = { version = "0.27.0", default-features = false, features = ["vulkan"], optional = true }
 log = "0.4.27"
 raw-window-handle = "0.6.2"
@@ -56,9 +56,9 @@ serde = { version = "1.0.219", optional = true }
 
 [dev-dependencies]
 ash = { version = "0.38.0", default-features = false, features = ["linked", "debug"] }
-egui_extras = { version = "0.30.0", features = ["all_loaders"] }
+egui_extras = { version = "0.31.1", features = ["all_loaders"] }
 egui-ash = { path = ".", features = ["gpu-allocator", "persistence"] }
-egui_tiles = "0.11.0"
+egui_tiles = "0.12.0"
 glam = "0.30.5"
 image = { version = "0.25.6", default-features = false, features = ["png", "jpeg", "bmp"] }
 log = "0.4.27"
