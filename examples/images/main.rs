@@ -31,7 +31,7 @@ impl App for MyApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::both().show(ui, |ui| {
                 ui.add(
-                    egui::Image::new("https://picsum.photos/seed/1.759706314/1024").rounding(10.0),
+                    egui::Image::new("https://picsum.photos/seed/1.759706314/1024").corner_radius(10.0),
                 );
 
                 ui.image(egui::include_image!("./ferris.svg"));
@@ -154,7 +154,7 @@ impl MyAppCreator {
         };
 
         // setup debug utils
-        let debug_utils_loader = debug_utils::Instance::new(&entry, &instance);
+        let debug_utils_loader = debug_utils::Instance::new(entry, &instance);
         let debug_messenger = if Self::ENABLE_VALIDATION_LAYERS {
             unsafe {
                 debug_utils_loader
@@ -169,14 +169,14 @@ impl MyAppCreator {
     }
 
     fn create_surface_loader(entry: &Entry, instance: &Instance) -> ash::khr::surface::Instance {
-        ash::khr::surface::Instance::new(&entry, &instance)
+        ash::khr::surface::Instance::new(entry, instance)
     }
 
     fn create_swapchain_loader(
         instance: &Instance,
         device: &Device,
     ) -> ash::khr::swapchain::Device {
-        ash::khr::swapchain::Device::new(&instance, &device)
+        ash::khr::swapchain::Device::new(instance, device)
     }
 
     fn create_surface(

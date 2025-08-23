@@ -28,5 +28,5 @@ pub enum Event<'a> {
         event: winit::event::DeviceEvent,
     },
     #[cfg(feature = "accesskit")]
-    AccessKitActionRequest(accesskit_winit::ActionRequestEvent),
+    AccessKitActionRequest(accesskit_winit::Event),
 }

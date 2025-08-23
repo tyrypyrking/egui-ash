@@ -36,7 +36,7 @@ impl App for MyApp {
             self.exit_signal.send(ExitCode::SUCCESS);
         }
 
-        egui::CentralPanel::default().show(&ctx, |ui| {
+        egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Hello");
             ui.label("Hello egui!");
             ui.separator();
@@ -47,7 +47,7 @@ impl App for MyApp {
             ui.horizontal(|ui| {
                 ui.label("Theme");
                 let id = ui.make_persistent_id("theme_combo_box_side");
-                egui::ComboBox::from_id_source(id)
+                egui::ComboBox::from_id_salt(id)
                     .selected_text(format!("{:?}", self.theme))
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut self.theme, Theme::Dark, "Dark");
@@ -68,7 +68,7 @@ impl App for MyApp {
                 .id(egui::Id::new("my_window"))
                 .resizable(true)
                 .scroll([true, true])
-                .show(&ctx, |ui| {
+                .show(ctx, |ui| {
                     ui.heading("Hello");
                     ui.label("Hello egui!");
                     ui.separator();
@@ -79,7 +79,7 @@ impl App for MyApp {
                     ui.horizontal(|ui| {
                         ui.label("Theme");
                         let id = ui.make_persistent_id("theme_combo_box_window");
-                        egui::ComboBox::from_id_source(id)
+                        egui::ComboBox::from_id_salt(id)
                             .selected_text(format!("{:?}", self.theme))
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(&mut self.theme, Theme::Dark, "Dark");
@@ -223,7 +223,7 @@ impl MyAppCreator {
         };
 
         // setup debug utils
-        let debug_utils_loader = ash::ext::debug_utils::Instance::new(&entry, &instance);
+        let debug_utils_loader = ash::ext::debug_utils::Instance::new(entry, &instance);
         let debug_messenger = if Self::ENABLE_VALIDATION_LAYERS {
             unsafe {
                 debug_utils_loader
@@ -462,7 +462,7 @@ impl AppCreator<Arc<Mutex<Allocator>>> for MyAppCreator {
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
             "NotoSansJP".to_owned(),
-            FontData::from_static(include_bytes!("./fonts/NotoSansJP-VariableFont_wght.ttf")),
+            Arc::new(FontData::from_static(include_bytes!("./fonts/NotoSansJP-VariableFont_wght.ttf"))),
         );
         fonts
             .families

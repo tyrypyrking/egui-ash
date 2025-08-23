@@ -17,7 +17,7 @@ use crate::{
     event,
     integration::{Integration, IntegrationEvent},
     renderer::ImageRegistry,
-    Allocator, AshRenderState,
+    Allocator,
 };
 #[cfg(feature = "persistence")]
 use crate::{storage, utils};
@@ -107,7 +107,6 @@ pub fn run<C: AppCreator<A> + 'static, A: Allocator + 'static>(
         creator,
         app: None,
         event_loop_proxy,
-        render_state: None,
         integration: None,
     };
 
@@ -128,7 +127,6 @@ where
     exit_signal: ExitSignal,
     creator: C,
     app: Option<C::App>,
-    render_state: Option<AshRenderState<A>>,
     integration: Option<ManuallyDrop<Integration<A>>>,
     event_loop_proxy: winit::event_loop::EventLoopProxy<IntegrationEvent>,
 }
@@ -236,7 +234,7 @@ where
         // the app drops for gpu_allocator drop order reasons.
         let integration = ManuallyDrop::new(Integration::new(
             &self.app_id,
-            &event_loop,
+            event_loop,
             context,
             main_window,
             render_state,
@@ -404,32 +402,4 @@ where
                 event_loop.exit();
                 return;
             }
-            match event {
-                winit::event::Event::NewEvents(start_cause) => {
-                    let app_event = event::Event::AppEvent {
-                        event: event::AppEvent::NewEvents(start_cause),
-                    };
-                    app.handle_event(app_event);
-                }
-                winit::event::Event::WindowEvent {
-                    event, window_id, ..
-                } => {
-                }
-                winit::event::Event::DeviceEvent { device_id, event } => {
-                }
-                #[allow(unused_variables)] // only used when accesskit feature is enabled
-                winit::event::Event::UserEvent(integration_event) => {
-                }
-                winit::event::Event::Suspended => {
-                }
-                winit::event::Event::Resumed => {
-                }
-                winit::event::Event::AboutToWait => {
-                }
-                winit::event::Event::MemoryWarning => {
-                }
-                winit::event::Event::LoopExiting => {
-                }
-            }
-
 */

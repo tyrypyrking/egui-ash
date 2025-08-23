@@ -12,14 +12,13 @@ impl Pane {
     pub fn create_tree(scene: Arc<Mutex<Scene>>, scene_view: SceneView) -> egui_tiles::Tree<Pane> {
         let mut tiles = egui_tiles::Tiles::default();
 
-        let mut tabs = vec![];
-        tabs.push(tiles.insert_pane(Pane::SceneView(scene_view)));
-        tabs.push(tiles.insert_pane(Pane::Hello));
+        let tabs = vec![
+            tiles.insert_pane(Pane::SceneView(scene_view)),
+            tiles.insert_pane(Pane::Hello),
+        ];
         let left = tiles.insert_vertical_tile(tabs);
 
-        let mut tabs = vec![];
-        tabs.push(left);
-        tabs.push(tiles.insert_pane(Pane::Properties(scene)));
+        let tabs = vec![left, tiles.insert_pane(Pane::Properties(scene))];
         let root = tiles.insert_horizontal_tile(tabs);
 
         egui_tiles::Tree::new("root", root, tiles)

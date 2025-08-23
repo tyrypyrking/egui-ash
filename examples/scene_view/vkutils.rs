@@ -6,7 +6,7 @@ use egui_ash::{
 use std::{collections::HashSet, ffi::CString};
 
 const ENABLE_VALIDATION_LAYERS: bool = true;
-const VALIDATION: [&'static str; 1] = ["VK_LAYER_KHRONOS_validation"];
+const VALIDATION: [&str; 1] = ["VK_LAYER_KHRONOS_validation"];
 
 unsafe extern "system" fn vulkan_debug_utils_callback(
     message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
@@ -102,7 +102,7 @@ pub fn create_instance(
     };
 
     // setup debug utils
-    let debug_utils_loader = debug_utils::Instance::new(&entry, &instance);
+    let debug_utils_loader = debug_utils::Instance::new(entry, &instance);
     let debug_messenger = if ENABLE_VALIDATION_LAYERS {
         unsafe {
             debug_utils_loader
@@ -117,14 +117,14 @@ pub fn create_instance(
 }
 
 pub fn create_surface_loader(entry: &Entry, instance: &Instance) -> ash::khr::surface::Instance {
-    ash::khr::surface::Instance::new(&entry, &instance)
+    ash::khr::surface::Instance::new(entry, instance)
 }
 
 pub fn create_swapchain_loader(
     instance: &Instance,
     device: &Device,
 ) -> ash::khr::swapchain::Device {
-    ash::khr::swapchain::Device::new(&instance, &device)
+    ash::khr::swapchain::Device::new(instance, device)
 }
 
 pub fn create_surface(

@@ -188,7 +188,7 @@ impl SceneViewInner {
         device: &Device,
         descriptor_pool: vk::DescriptorPool,
         descriptor_set_layouts: &[vk::DescriptorSetLayout],
-        uniform_buffers: &Vec<vk::Buffer>,
+        uniform_buffers: &[vk::Buffer],
     ) -> Vec<vk::DescriptorSet> {
         let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
@@ -439,7 +439,7 @@ impl SceneViewInner {
                     .expect("Failed to begin command buffer");
             }
             vkutils::insert_image_memory_barrier(
-                &device,
+                device,
                 &cmd,
                 &color_image,
                 queue_family_index,
@@ -538,7 +538,7 @@ impl SceneViewInner {
         let pipeline_layout = unsafe {
             device
                 .create_pipeline_layout(
-                    &vk::PipelineLayoutCreateInfo::default().set_layouts(&descriptor_set_layouts),
+                    &vk::PipelineLayoutCreateInfo::default().set_layouts(descriptor_set_layouts),
                     None,
                 )
                 .expect("Failed to create pipeline layout")

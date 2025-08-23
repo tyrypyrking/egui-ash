@@ -99,6 +99,28 @@ struct RendererInner {
     current_frame: usize,
     dirty_swapchain: bool,
 }
+
+type Framebuffers = (
+    Vec<vk::Framebuffer>,
+    Vec<(vk::Image, Allocation)>,
+    Vec<vk::ImageView>,
+    Vec<vk::ImageView>,
+);
+
+pub struct RendererInnerCreationInfo {
+    pub physical_device: vk::PhysicalDevice,
+    pub device: Device,
+    pub surface_loader: ash::khr::surface::Instance,
+    pub swapchain_loader: ash::khr::swapchain::Device,
+    pub allocator: Arc<Mutex<Allocator>>,
+    pub surface: vk::SurfaceKHR,
+    pub queue_family_index: u32,
+    pub queue: vk::Queue,
+    pub command_pool: vk::CommandPool,
+    pub width: u32,
+    pub height: u32,
+}
+
 impl RendererInner {
     fn create_swapchain(
         physical_device: vk::PhysicalDevice,
@@ -125,8 +147,7 @@ impl RendererInner {
                 format.format == vk::Format::B8G8R8A8_UNORM
                     || format.format == vk::Format::R8G8B8A8_UNORM
             })
-            .unwrap_or(&surface_formats[0])
-            .clone();
+            .unwrap_or(&surface_formats[0]);
         let surface_capabilities = unsafe {
             surface_loader
                 .get_physical_device_surface_capabilities(physical_device, surface)
@@ -182,7 +203,7 @@ impl RendererInner {
                 .expect("Failed to get swapchain images")
         };
 
-        (swapchain, surface_format, surface_extent, swapchain_images)
+        (swapchain, *surface_format, surface_extent, swapchain_images)
     }
 
     fn create_uniform_buffers(
@@ -272,7 +293,7 @@ impl RendererInner {
         device: &Device,
         descriptor_pool: vk::DescriptorPool,
         descriptor_set_layouts: &[vk::DescriptorSetLayout],
-        uniform_buffers: &Vec<vk::Buffer>,
+        uniform_buffers: &[vk::Buffer],
     ) -> Vec<vk::DescriptorSet> {
         let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
@@ -368,12 +389,7 @@ impl RendererInner {
         format: vk::SurfaceFormatKHR,
         extent: vk::Extent2D,
         swapchain_images: &[vk::Image],
-    ) -> (
-        Vec<vk::Framebuffer>,
-        Vec<(vk::Image, Allocation)>,
-        Vec<vk::ImageView>,
-        Vec<vk::ImageView>,
-    ) {
+    ) -> Framebuffers {
         let mut framebuffers = vec![];
         let mut depth_images_and_allocations = vec![];
         let mut color_image_views = vec![];
@@ -521,7 +537,7 @@ impl RendererInner {
         let pipeline_layout = unsafe {
             device
                 .create_pipeline_layout(
-                    &vk::PipelineLayoutCreateInfo::default().set_layouts(&descriptor_set_layouts),
+                    &vk::PipelineLayoutCreateInfo::default().set_layouts(descriptor_set_layouts),
                     None,
                 )
                 .expect("Failed to create pipeline layout")
@@ -881,14 +897,13 @@ impl RendererInner {
                     .expect("Failed to get physical device surface formats")
             };
 
-            let surface_format = surface_formats
+            let surface_format = *surface_formats
                 .iter()
                 .find(|surface_format| {
                     surface_format.format == vk::Format::B8G8R8A8_UNORM
                         || surface_format.format == vk::Format::R8G8B8A8_UNORM
                 })
-                .unwrap_or(&surface_formats[0])
-                .clone();
+                .unwrap_or(&surface_formats[0]);
 
             let surface_present_mode = vk::PresentModeKHR::FIFO;
 
@@ -979,19 +994,21 @@ impl RendererInner {
         self.dirty_swapchain = false;
     }
 
-    fn new(
-        physical_device: vk::PhysicalDevice,
-        device: Device,
-        surface_loader: ash::khr::surface::Instance,
-        swapchain_loader: ash::khr::swapchain::Device,
-        allocator: Arc<Mutex<Allocator>>,
-        surface: vk::SurfaceKHR,
-        queue_family_index: u32,
-        queue: vk::Queue,
-        command_pool: vk::CommandPool,
-        width: u32,
-        height: u32,
-    ) -> Self {
+    fn new(creation_info: RendererInnerCreationInfo) -> Self {
+        let RendererInnerCreationInfo {
+            physical_device,
+            device,
+            surface_loader,
+            swapchain_loader,
+            allocator,
+            surface,
+            queue_family_index,
+            queue,
+            command_pool,
+            width,
+            height,
+        } = creation_info;
+
         let (swapchain, surface_format, surface_extent, swapchain_images) = Self::create_swapchain(
             physical_device,
             &surface_loader,
@@ -1100,7 +1117,7 @@ impl RendererInner {
         let result = unsafe {
             self.swapchain_loader.acquire_next_image(
                 self.swapchain,
-                std::u64::MAX,
+                u64::MAX,
                 self.image_available_semaphores[self.current_frame],
                 vk::Fence::null(),
             )
@@ -1336,33 +1353,9 @@ pub struct Renderer {
     inner: Arc<Mutex<RendererInner>>,
 }
 impl Renderer {
-    pub fn new(
-        physical_device: vk::PhysicalDevice,
-        device: Device,
-        surface_loader: ash::khr::surface::Instance,
-        swapchain_loader: ash::khr::swapchain::Device,
-        allocator: Arc<Mutex<Allocator>>,
-        surface: vk::SurfaceKHR,
-        queue_family_index: u32,
-        queue: vk::Queue,
-        command_pool: vk::CommandPool,
-        width: u32,
-        height: u32,
-    ) -> Self {
+    pub fn new(creation_info: RendererInnerCreationInfo) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(RendererInner::new(
-                physical_device,
-                device,
-                surface_loader,
-                swapchain_loader,
-                allocator,
-                surface,
-                queue_family_index,
-                queue,
-                command_pool,
-                width,
-                height,
-            ))),
+            inner: Arc::new(Mutex::new(RendererInner::new(creation_info))),
         }
     }
 

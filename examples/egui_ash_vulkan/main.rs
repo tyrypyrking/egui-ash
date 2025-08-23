@@ -1,7 +1,8 @@
 use ash::{ext::debug_utils, vk, Device, Entry, Instance};
 use egui_ash::{
     raw_window_handle::{HasDisplayHandle as _, HasWindowHandle as _},
-    winit::{self, window::Theme}, App, AppCreator, AshRenderState, CreationContext, HandleRedraw, RunOption,
+    winit::{self, window::Theme},
+    App, AppCreator, AshRenderState, CreationContext, HandleRedraw, RunOption,
 };
 use gpu_allocator::vulkan::*;
 use std::{
@@ -13,6 +14,8 @@ use std::{
 
 mod renderer;
 use renderer::Renderer;
+
+use crate::renderer::RendererInnerCreationInfo;
 
 struct MyApp {
     entry: Entry,
@@ -36,14 +39,14 @@ struct MyApp {
 }
 impl App for MyApp {
     fn ui(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("my_side_panel").show(&ctx, |ui| {
+        egui::SidePanel::left("my_side_panel").show(ctx, |ui| {
             ui.heading("Hello");
             ui.label("Hello egui!");
             ui.separator();
             ui.horizontal(|ui| {
                 ui.label("Theme");
                 let id = ui.make_persistent_id("theme_combo_box_side");
-                egui::ComboBox::from_id_source(id)
+                egui::ComboBox::from_id_salt(id)
                     .selected_text(format!("{:?}", self.theme))
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut self.theme, Theme::Dark, "Dark");
@@ -65,14 +68,14 @@ impl App for MyApp {
             .id(egui::Id::new("my_window"))
             .resizable(true)
             .scroll([true, true])
-            .show(&ctx, |ui| {
+            .show(ctx, |ui| {
                 ui.heading("Hello");
                 ui.label("Hello egui!");
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label("Theme");
                     let id = ui.make_persistent_id("theme_combo_box_window");
-                    egui::ComboBox::from_id_source(id)
+                    egui::ComboBox::from_id_salt(id)
                         .selected_text(format!("{:?}", self.theme))
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut self.theme, Theme::Dark, "Dark");
@@ -188,7 +191,7 @@ impl MyAppCreator {
             let name = ext.as_ptr();
             extension_names.push(name);
         }
-         #[cfg(any(target_os = "macos", target_os = "ios"))]
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
         {
             extension_names.push(vk::KhrPortabilityEnumerationFn::name().as_ptr());
             extension_names.push(vk::KhrGetPhysicalDeviceProperties2Fn::name().as_ptr());
@@ -223,7 +226,7 @@ impl MyAppCreator {
         };
 
         // setup debug utils
-        let debug_utils_loader = debug_utils::Instance::new(&entry, &instance);
+        let debug_utils_loader = debug_utils::Instance::new(entry, &instance);
         let debug_messenger = if Self::ENABLE_VALIDATION_LAYERS {
             unsafe {
                 debug_utils_loader
@@ -238,14 +241,14 @@ impl MyAppCreator {
     }
 
     fn create_surface_loader(entry: &Entry, instance: &Instance) -> ash::khr::surface::Instance {
-        ash::khr::surface::Instance::new(&entry, &instance)
+        ash::khr::surface::Instance::new(entry, instance)
     }
 
     fn create_swapchain_loader(
         instance: &Instance,
         device: &Device,
     ) -> ash::khr::swapchain::Device {
-        ash::khr::swapchain::Device::new(&instance, &device)
+        ash::khr::swapchain::Device::new(instance, device)
     }
 
     fn create_surface(
@@ -460,33 +463,37 @@ impl AppCreator<Arc<Mutex<Allocator>>> for MyAppCreator {
         // setup context
         cc.context.set_visuals(egui::style::Visuals::dark());
 
+        let renderer_info = RendererInnerCreationInfo {
+            physical_device,
+            device: device.clone(),
+            surface_loader: surface_loader.clone(),
+            swapchain_loader: swapchain_loader.clone(),
+            allocator: allocator.clone(),
+            surface,
+            queue_family_index,
+            queue,
+            command_pool,
+            width: 1000,
+            height: 800,
+        };
+
+        let renderer = Renderer::new(renderer_info);
+
         let app = MyApp {
             entry,
             instance,
-            device: device.clone(),
+            device,
             debug_utils_loader,
             debug_messenger,
             physical_device,
-            surface_loader: surface_loader.clone(),
-            swapchain_loader: swapchain_loader.clone(),
+            surface_loader,
+            swapchain_loader,
             surface,
             queue,
             command_pool,
             allocator: ManuallyDrop::new(allocator.clone()),
 
-            renderer: Renderer::new(
-                physical_device,
-                device,
-                surface_loader,
-                swapchain_loader,
-                allocator.clone(),
-                surface,
-                queue_family_index,
-                queue,
-                command_pool,
-                1000,
-                800,
-            ),
+            renderer,
 
             theme: if cc.context.style().visuals.dark_mode {
                 Theme::Dark

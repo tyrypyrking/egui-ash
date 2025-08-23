@@ -120,14 +120,13 @@ impl TriangleRendererInner {
                 .get_physical_device_surface_formats(physical_device, surface)
                 .expect("Failed to get physical device surface formats")
         };
-        let surface_format = surface_formats
+        let surface_format = *surface_formats
             .iter()
             .find(|format| {
                 format.format == vk::Format::B8G8R8A8_UNORM
                     || format.format == vk::Format::R8G8B8A8_UNORM
             })
-            .unwrap_or(&surface_formats[0])
-            .clone();
+            .unwrap_or(&surface_formats[0]);
         let surface_capabilities = unsafe {
             surface_loader
                 .get_physical_device_surface_capabilities(physical_device, surface)
@@ -273,7 +272,7 @@ impl TriangleRendererInner {
         device: &Device,
         descriptor_pool: vk::DescriptorPool,
         descriptor_set_layouts: &[vk::DescriptorSetLayout],
-        uniform_buffers: &Vec<vk::Buffer>,
+        uniform_buffers: &[vk::Buffer],
     ) -> Vec<vk::DescriptorSet> {
         let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
@@ -422,7 +421,7 @@ impl TriangleRendererInner {
         let pipeline_layout = unsafe {
             device
                 .create_pipeline_layout(
-                    &vk::PipelineLayoutCreateInfo::default().set_layouts(&descriptor_set_layouts),
+                    &vk::PipelineLayoutCreateInfo::default().set_layouts(descriptor_set_layouts),
                     None,
                 )
                 .expect("Failed to create pipeline layout")
@@ -508,7 +507,7 @@ impl TriangleRendererInner {
         queue: vk::Queue,
     ) -> (vk::Buffer, Allocation, u32) {
         let mut allocator = allocator.lock().unwrap();
-        let vertices = vec![
+        let vertices = [
             Vertex {
                 position: Vec3::new(0.0, 1.0, 0.0),
                 color: Vec3::new(0.0, 0.0, 1.0),
@@ -752,14 +751,13 @@ impl TriangleRendererInner {
                     .expect("Failed to get physical device surface formats")
             };
 
-            let surface_format = surface_formats
+            let surface_format = *surface_formats
                 .iter()
                 .find(|surface_format| {
                     surface_format.format == vk::Format::B8G8R8A8_UNORM
                         || surface_format.format == vk::Format::R8G8B8A8_UNORM
                 })
-                .unwrap_or(&surface_formats[0])
-                .clone();
+                .unwrap_or(&surface_formats[0]);
 
             let surface_present_mode = vk::PresentModeKHR::FIFO;
 
@@ -965,7 +963,7 @@ impl TriangleRendererInner {
         let result = unsafe {
             self.swapchain_loader.acquire_next_image(
                 self.swapchain,
-                std::u64::MAX,
+                u64::MAX,
                 self.image_available_semaphores[self.current_frame],
                 vk::Fence::null(),
             )

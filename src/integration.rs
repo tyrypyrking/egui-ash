@@ -168,6 +168,7 @@ impl<A: Allocator + 'static> Integration<A> {
         {
             //let ctx = context.clone();
             root_viewport.state.init_accesskit(
+                event_loop,
                 &root_viewport.window,
                 event_loop_proxy.clone(),
                 /*move || {
@@ -628,6 +629,8 @@ impl<A: Allocator + 'static> Integration<A> {
     }
 }
 
+type ViewportCallback = Option<Arc<dyn Fn(&egui::Context) + Send + Sync>>;
+
 #[allow(clippy::too_many_arguments)]
 fn initialize_or_update_viewport<'vp>(
     context: &egui::Context,
@@ -639,7 +642,7 @@ fn initialize_or_update_viewport<'vp>(
     ids: egui::ViewportIdPair,
     class: egui::ViewportClass,
     mut builder: egui::ViewportBuilder,
-    viewport_ui_cb: Option<Arc<dyn Fn(&egui::Context) + Send + Sync>>,
+    viewport_ui_cb: ViewportCallback,
     window_initialized: &mut bool,
     theme: Option<winit::window::Theme>,
     #[cfg(feature = "persistence")] storage: &Storage,
@@ -846,7 +849,7 @@ fn immediate_viewport_renderer(
             let mut window_initialized = false;
             let viewport = initialize_or_update_viewport(
                 ctx,
-                &event_loop,
+                event_loop,
                 &mut window_id_to_viewport_id,
                 max_texture_side,
                 &mut viewports,
@@ -918,7 +921,7 @@ fn immediate_viewport_renderer(
             let mut window_initialized = false;
             let viewport = initialize_or_update_viewport(
                 ctx,
-                &event_loop,
+                event_loop,
                 &mut window_id_to_viewport_id,
                 max_texture_side,
                 &mut viewports,
