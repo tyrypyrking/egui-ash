@@ -9,7 +9,7 @@ use std::{
     ffi::{CStr, CString},
     mem::ManuallyDrop,
     process::ExitCode,
-    sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use crate::{
@@ -97,8 +97,6 @@ pub fn run<C: AppCreator<A> + 'static, A: Allocator + 'static>(
     let (exit_signal_tx, exit_signal_rx) = std::sync::mpsc::channel();
     let exit_signal = ExitSignal { tx: exit_signal_tx };
 
-    let exit_code = Arc::new(Mutex::new(ExitCode::SUCCESS));
-    let exit_code_clone = exit_code.clone();
     let event_loop_proxy = event_loop.create_proxy();
     let mut state = State {
         app_id,
@@ -113,8 +111,8 @@ pub fn run<C: AppCreator<A> + 'static, A: Allocator + 'static>(
     event_loop
         .run_app(&mut state)
         .expect("Failed to run event loop");
-    let code = exit_code.lock().unwrap();
-    *code
+
+    exit_signal_rx.recv_timeout(Duration::from_secs(1)).unwrap()
 }
 
 struct State<C, A>
