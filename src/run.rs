@@ -390,6 +390,7 @@ where
         unsafe {
             ManuallyDrop::drop(integration);
         }
+        self.exit_signal.send(ExitCode::SUCCESS);
     }
 }
 

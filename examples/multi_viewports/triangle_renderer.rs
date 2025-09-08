@@ -1176,11 +1176,6 @@ impl TriangleRendererInner {
             for allocation in self.uniform_buffer_allocations.drain(..) {
                 allocator.free(allocation).expect("Failed to free memory");
             }
-            self.swapchain_loader
-                .destroy_swapchain(self.swapchain, None);
-        }
-        unsafe {
-            ManuallyDrop::drop(&mut self.allocator);
         }
     }
 }
