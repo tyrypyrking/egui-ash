@@ -5,12 +5,11 @@ use std::{
     mem::ManuallyDrop,
     sync::{Arc, Mutex},
 };
+#[path = "../common/mod.rs"]
+mod common;
 
-mod scene_view;
-mod vkutils;
-
-use scene_view::SceneView;
-use vkutils::*;
+use common::scene_view::SceneView;
+use common::vkutils::*;
 
 struct MyApp {
     _entry: Arc<Entry>,

@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::vkutils;
+use crate::common::vkutils;
 
 macro_rules! include_spirv {
     ($file:literal) => {{
@@ -102,6 +102,7 @@ struct SceneViewInner {
     rotate_y: f32,
     rotate_x: f32,
 }
+
 impl SceneViewInner {
     const IN_FLIGHT_FRAMES: usize = 2;
 
@@ -626,7 +627,7 @@ impl SceneViewInner {
         let mut allocator = allocator.lock().unwrap();
         let vertices = {
             let model_obj = tobj::load_obj(
-                "./examples/scene_view/assets/suzanne.obj",
+                "./examples/common/assets/suzanne.obj",
                 &tobj::LoadOptions {
                     single_index: true,
                     triangulate: true,

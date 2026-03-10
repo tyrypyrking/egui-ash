@@ -383,7 +383,7 @@ impl MyAppCreator {
         let mut allocator = allocator.lock().unwrap();
 
         let image =
-            image::open("./examples/native_image/Mandrill.bmp").expect("Failed to open image file");
+            image::open("./examples/common/assets/Mandrill.bmp").expect("Failed to open image file");
         let (image_width, image_height) = (image.width(), image.height());
         let image_data = image.to_rgba8().into_raw();
 

@@ -25,6 +25,9 @@ pub(crate) struct IntegrationEvent {
     #[cfg(feature = "accesskit")]
     pub(crate) accesskit: AccessKitEvent,
 }
+
+pub(crate) type ViewportUiCallback = Arc<dyn Fn(&egui::Context) + Send + Sync>;
+
 #[cfg(feature = "accesskit")]
 impl From<AccessKitEvent> for IntegrationEvent {
     fn from(event: AccessKitEvent) -> Self {
@@ -642,7 +645,7 @@ fn initialize_or_update_viewport<'vp>(
     ids: egui::ViewportIdPair,
     class: egui::ViewportClass,
     mut builder: egui::ViewportBuilder,
-    viewport_ui_cb: ViewportCallback,
+    viewport_ui_cb: ViewportUiCallback,
     window_initialized: &mut bool,
     theme: Option<winit::window::Theme>,
     #[cfg(feature = "persistence")] storage: &Storage,

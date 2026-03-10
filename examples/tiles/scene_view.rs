@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{scene::Scene, vkutils};
+use crate::{scene::Scene, common::vkutils};
 
 macro_rules! include_spirv {
     ($file:literal) => {{
@@ -518,7 +518,7 @@ impl SceneViewInner {
         render_pass: vk::RenderPass,
     ) -> (vk::Pipeline, vk::PipelineLayout) {
         let vertex_shader_module = {
-            let spirv = include_spirv!("./shaders/spv/model.vert.spv");
+            let spirv = include_spirv!("../common/shaders/spv/model.vert.spv");
             let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&spirv);
             unsafe {
                 device
@@ -527,7 +527,7 @@ impl SceneViewInner {
             }
         };
         let fragment_shader_module = {
-            let spirv = include_spirv!("./shaders/spv/model.frag.spv");
+            let spirv = include_spirv!("../common/shaders/spv/model.frag.spv");
             let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&spirv);
             unsafe {
                 device
@@ -637,7 +637,7 @@ impl SceneViewInner {
         let mut allocator = allocator.lock().unwrap();
         let vertices = {
             let model_obj = tobj::load_obj(
-                "./examples/tiles/assets/suzanne.obj",
+                "./examples/common/assets/suzanne.obj",
                 &tobj::LoadOptions {
                     single_index: true,
                     triangulate: true,

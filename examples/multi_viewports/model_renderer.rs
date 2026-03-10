@@ -141,7 +141,7 @@ impl ModelRendererInner {
                 .get_physical_device_surface_formats(physical_device, surface)
                 .expect("Failed to get physical device surface formats")
         };
-        let surface_format = surface_formats
+        let surface_format = *surface_formats
             .iter()
             .find(|format| {
                 format.format == vk::Format::B8G8R8A8_UNORM
@@ -506,7 +506,7 @@ impl ModelRendererInner {
         render_pass: vk::RenderPass,
     ) -> (vk::Pipeline, vk::PipelineLayout) {
         let vertex_shader_module = {
-            let spirv = include_spirv!("./shaders/spv/model.vert.spv");
+            let spirv = include_spirv!("../common/shaders/spv/model.vert.spv");
             let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&spirv);
             unsafe {
                 device
@@ -515,7 +515,7 @@ impl ModelRendererInner {
             }
         };
         let fragment_shader_module = {
-            let spirv = include_spirv!("./shaders/spv/model.frag.spv");
+            let spirv = include_spirv!("../common/shaders/spv/model.frag.spv");
             let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&spirv);
             unsafe {
                 device
@@ -625,7 +625,7 @@ impl ModelRendererInner {
         let mut allocator = allocator.lock().unwrap();
         let vertices = {
             let model_obj = tobj::load_obj(
-                "./examples/multi_viewports/assets/suzanne.obj",
+                "./examples/common/assets/suzanne.obj",
                 &tobj::LoadOptions {
                     single_index: true,
                     triangulate: true,

@@ -11,10 +11,13 @@ use std::{
 
 mod model_renderer;
 mod triangle_renderer;
-mod vkutils;
+
+#[path = "../common/mod.rs"]
+mod common;
+
 use model_renderer::ModelRenderer;
 use triangle_renderer::TriangleRenderer;
-use vkutils::*;
+use common::vkutils::*;
 
 use crate::model_renderer::RendererCreationInfo;
 

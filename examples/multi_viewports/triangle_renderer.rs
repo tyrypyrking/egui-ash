@@ -390,7 +390,7 @@ impl TriangleRendererInner {
         render_pass: vk::RenderPass,
     ) -> (vk::Pipeline, vk::PipelineLayout) {
         let vertex_shader_module = {
-            let spirv = include_spirv!("./shaders/spv/triangle.vert.spv");
+            let spirv = include_spirv!("../common/shaders/spv/triangle.vert.spv");
             let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&spirv);
             unsafe {
                 device
@@ -399,7 +399,7 @@ impl TriangleRendererInner {
             }
         };
         let fragment_shader_module = {
-            let spirv = include_spirv!("./shaders/spv/triangle.frag.spv");
+            let spirv = include_spirv!("../common/shaders/spv/triangle.frag.spv");
             let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&spirv);
             unsafe {
                 device
@@ -808,7 +808,7 @@ impl TriangleRendererInner {
                     .expect("Failed to get swapchain images")
             };
 
-            (swapchain, swapchain_images, surface_format, surface_extent)
+            (swapchain, swapchain_images, *surface_format, surface_extent)
         };
         self.swapchain = swapchain;
         self.swapchain_images = swapchain_images;

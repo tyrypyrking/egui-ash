@@ -462,7 +462,7 @@ impl AppCreator<Arc<Mutex<Allocator>>> for MyAppCreator {
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
             "NotoSansJP".to_owned(),
-            Arc::new(FontData::from_static(include_bytes!("./fonts/NotoSansJP-VariableFont_wght.ttf"))),
+            Arc::new(FontData::from_static(include_bytes!("../common/fonts/NotoSansJP-VariableFont_wght.ttf"))),
         );
         fonts
             .families

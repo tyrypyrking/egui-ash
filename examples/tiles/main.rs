@@ -10,13 +10,15 @@ mod pane;
 mod scene;
 mod scene_view;
 mod tree_behavior;
-mod vkutils;
+
+#[path = "../common/mod.rs"]
+mod common;
 
 use pane::Pane;
 use scene::Scene;
 use scene_view::SceneView;
 use tree_behavior::TreeBehavior;
-use vkutils::*;
+use common::vkutils::*;
 
 struct MyApp {
     _entry: Arc<Entry>,

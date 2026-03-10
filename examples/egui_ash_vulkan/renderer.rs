@@ -29,6 +29,14 @@ struct Vertex {
     position: Vec3,
     normal: Vec3,
 }
+
+pub(crate) struct FrameBufferInfo {
+    framebuffers: Vec<vk::Framebuffer>,
+    depth_images_and_allocations: Vec<(vk::Image, Allocation)>,
+    color_image_views: Vec<vk::ImageView>,
+    depth_image_views: Vec<vk::ImageView>,
+}
+
 impl Vertex {
     fn get_binding_descriptions() -> [vk::VertexInputBindingDescription; 1] {
         [vk::VertexInputBindingDescription::default()
@@ -141,7 +149,7 @@ impl RendererInner {
                 .get_physical_device_surface_formats(physical_device, surface)
                 .expect("Failed to get physical device surface formats")
         };
-        let surface_format = surface_formats
+        let surface_format = *surface_formats
             .iter()
             .find(|format| {
                 format.format == vk::Format::B8G8R8A8_UNORM
@@ -389,7 +397,7 @@ impl RendererInner {
         format: vk::SurfaceFormatKHR,
         extent: vk::Extent2D,
         swapchain_images: &[vk::Image],
-    ) -> Framebuffers {
+    ) -> FrameBufferInfo {
         let mut framebuffers = vec![];
         let mut depth_images_and_allocations = vec![];
         let mut color_image_views = vec![];
@@ -492,12 +500,12 @@ impl RendererInner {
             });
             depth_images_and_allocations.push((depth_image, depth_allocation));
         }
-        (
+        FrameBufferInfo {
             framebuffers,
             depth_images_and_allocations,
             color_image_views,
             depth_image_views,
-        )
+        }
     }
 
     fn create_graphics_pipeline(
@@ -506,7 +514,7 @@ impl RendererInner {
         render_pass: vk::RenderPass,
     ) -> (vk::Pipeline, vk::PipelineLayout) {
         let vertex_shader_module = {
-            let spirv = include_spirv!("./shaders/spv/vert.spv");
+            let spirv = include_spirv!("../common/shaders/spv/model.vert.spv");
             let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&spirv);
             unsafe {
                 device
@@ -515,7 +523,7 @@ impl RendererInner {
             }
         };
         let fragment_shader_module = {
-            let spirv = include_spirv!("./shaders/spv/frag.spv");
+            let spirv = include_spirv!("../common/shaders/spv/model.frag.spv");
             let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&spirv);
             unsafe {
                 device
@@ -625,7 +633,7 @@ impl RendererInner {
         let mut allocator = allocator.lock().unwrap();
         let vertices = {
             let model_obj = tobj::load_obj(
-                "./examples/egui_ash_vulkan/assets/suzanne.obj",
+                "./examples/common/assets/suzanne.obj",
                 &tobj::LoadOptions {
                     single_index: true,
                     triangulate: true,
@@ -954,7 +962,7 @@ impl RendererInner {
                     .expect("Failed to get swapchain images")
             };
 
-            (swapchain, swapchain_images, surface_format, surface_extent)
+            (swapchain, swapchain_images, *surface_format, surface_extent)
         };
         self.swapchain = swapchain;
         self.swapchain_images = swapchain_images;
@@ -970,15 +978,19 @@ impl RendererInner {
 
         self.render_pass = Self::create_render_pass(&self.device, self.surface_format);
 
-        let (framebuffers, depth_images_and_allocations, color_image_views, depth_image_views) =
-            Self::create_framebuffers(
-                &self.device,
-                Arc::clone(&self.allocator),
-                self.render_pass,
-                self.surface_format,
-                self.surface_extent,
-                &self.swapchain_images,
-            );
+        let FrameBufferInfo {
+            framebuffers,
+            depth_images_and_allocations,
+            color_image_views,
+            depth_image_views,
+        } = Self::create_framebuffers(
+            &self.device,
+            Arc::clone(&self.allocator),
+            self.render_pass,
+            self.surface_format,
+            self.surface_extent,
+            &self.swapchain_images,
+        );
         self.framebuffers = framebuffers;
         self.depth_images_and_allocations = depth_images_and_allocations;
         self.color_image_views = color_image_views;
@@ -1030,15 +1042,19 @@ impl RendererInner {
             &uniform_buffers,
         );
         let render_pass = Self::create_render_pass(&device, surface_format);
-        let (framebuffers, depth_images_and_allocations, color_image_views, depth_image_views) =
-            Self::create_framebuffers(
-                &device,
-                allocator.clone(),
-                render_pass,
-                surface_format,
-                surface_extent,
-                &swapchain_images,
-            );
+        let FrameBufferInfo {
+            framebuffers,
+            depth_images_and_allocations,
+            color_image_views,
+            depth_image_views,
+        } = Self::create_framebuffers(
+            &device,
+            allocator.clone(),
+            render_pass,
+            surface_format,
+            surface_extent,
+            &swapchain_images,
+        );
         let (pipeline, pipeline_layout) =
             Self::create_graphics_pipeline(&device, &descriptor_set_layouts, render_pass);
         let (vertex_buffer, vertex_buffer_allocation, vertex_count) =
