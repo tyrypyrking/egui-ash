@@ -92,7 +92,7 @@ impl<A: Allocator + 'static> Integration<A> {
         present_mode: ash::vk::PresentModeKHR,
         receiver: ImageRegistryReceiver,
         theme: Option<winit::window::Theme>,
-        _event_loop_proxy: &winit::event_loop::EventLoopProxy<IntegrationEvent>,
+        #[cfg(feature = "accesskit")] event_loop_proxy: &winit::event_loop::EventLoopProxy<IntegrationEvent>,
         #[cfg(feature = "persistence")] storage: Storage,
         #[cfg(feature = "persistence")] persistent_windows: bool,
         #[cfg(feature = "persistence")] persistent_egui_memory: bool,

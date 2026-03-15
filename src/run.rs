@@ -96,14 +96,14 @@ pub fn run<C: AppCreator<A> + 'static, A: Allocator + 'static>(
     let (exit_signal_tx, exit_signal_rx) = std::sync::mpsc::channel();
     let exit_signal = ExitSignal { tx: exit_signal_tx };
 
-    let event_loop_proxy = event_loop.create_proxy();
     let mut state = State {
         app_id,
         run_option,
         exit_signal,
         creator,
         app: None,
-        event_loop_proxy,
+        #[cfg(feature = "accesskit")]
+        event_loop_proxy: event_loop.create_proxy(),
         integration: None,
     };
 
@@ -125,6 +125,7 @@ where
     creator: C,
     app: Option<C::App>,
     integration: Option<ManuallyDrop<Integration<A>>>,
+    #[cfg(feature = "accesskit")]
     event_loop_proxy: winit::event_loop::EventLoopProxy<IntegrationEvent>,
 }
 
@@ -238,6 +239,7 @@ where
             self.run_option.present_mode,
             image_registry_receiver,
             Some(self.run_option.default_theme),
+            #[cfg(feature = "accesskit")]
             &self.event_loop_proxy,
             #[cfg(feature = "persistence")]
             storage,
@@ -328,7 +330,7 @@ where
         app.handle_event(device_event);
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: IntegrationEvent) {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: IntegrationEvent) {
         #[cfg(feature = "accesskit")]
         {
             let (integration, app) = (
@@ -336,8 +338,8 @@ where
                 self.app.as_mut().unwrap(),
             );
 
-            integration.handle_accesskit_event(&event.accesskit, event_loop, app);
-            let user_event = event::Event::AccessKitActionRequest(event.accesskit);
+            integration.handle_accesskit_event(&_event.accesskit, _event_loop, app);
+            let user_event = event::Event::AccessKitActionRequest(_event.accesskit);
             app.handle_event(user_event);
         }
     }
