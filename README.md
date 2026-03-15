@@ -4,7 +4,7 @@
 [![Documentation](https://docs.rs/egui-ash/badge.svg)](https://docs.rs/egui-ash)
 ![MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Apache2.0](https://img.shields.io/badge/license-Apache2.0-blue.svg)
-[![egui: 0.28](https://img.shields.io/badge/egui-0.28-orange)](https://docs.rs/egui/0.28/egui)
+[![egui: 0.33.3](https://img.shields.io/badge/egui-0.33.3-orange)](https://docs.rs/egui/0.33.3/egui)
 [![ash: 0.38](https://img.shields.io/badge/ash-0.38-orange)](https://docs.rs/ash/0.38/ash)
 
 [egui](https://github.com/emilk/egui) integration for [ash](https://github.com/MaikKlein/ash) (Vulkan).
