@@ -1,6 +1,7 @@
 #[cfg(feature = "persistence")]
-use egui_winit::winit::event_loop::EventLoopWindowTarget;
+use egui_winit::winit::event_loop::ActiveEventLoop;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn insert_image_memory_barrier(
     device: &ash::Device,
     cmd: ash::vk::CommandBuffer,
@@ -38,9 +39,9 @@ pub(crate) fn insert_image_memory_barrier(
 }
 
 #[cfg(feature = "persistence")]
-pub(crate) fn largest_monitor_point_size<E>(
+pub(crate) fn largest_monitor_point_size(
     egui_zoom_factor: f32,
-    event_loop: &EventLoopWindowTarget<E>,
+    event_loop: &ActiveEventLoop,
 ) -> egui::Vec2 {
     let mut max_size = egui::Vec2::ZERO;
 

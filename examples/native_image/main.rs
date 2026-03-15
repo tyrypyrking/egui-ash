@@ -1,7 +1,7 @@
 use ash::{ext::debug_utils, vk, Device, Entry, Instance};
 use egui_ash::{
     raw_window_handle::{HasDisplayHandle as _, HasWindowHandle as _},
-    winit, App, AppCreator, AshRenderState, CreationContext, RunOption, Theme,
+    winit::{self, window::Theme}, App, AppCreator, AshRenderState, CreationContext, RunOption,
 };
 use gpu_allocator::vulkan::*;
 use std::{
@@ -35,7 +35,7 @@ struct MyApp {
 }
 impl App for MyApp {
     fn ui(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(&ctx, |ui| {
+        egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Hello");
             ui.label("Hello native ash image texture!");
             ui.separator();
@@ -45,7 +45,7 @@ impl App for MyApp {
                 .id(egui::Id::new("my_window"))
                 .resizable(true)
                 .scroll([true, true])
-                .show(&ctx, |ui| {
+                .show(ctx, |ui| {
                     ui.label("user texture");
                     ui.image(egui::load::SizedTexture::new(
                         self.texture_id,
@@ -180,7 +180,7 @@ impl MyAppCreator {
         };
 
         // setup debug utils
-        let debug_utils_loader = debug_utils::Instance::new(&entry, &instance);
+        let debug_utils_loader = debug_utils::Instance::new(entry, &instance);
         let debug_messenger = if Self::ENABLE_VALIDATION_LAYERS {
             unsafe {
                 debug_utils_loader
@@ -195,14 +195,14 @@ impl MyAppCreator {
     }
 
     fn create_surface_loader(entry: &Entry, instance: &Instance) -> ash::khr::surface::Instance {
-        ash::khr::surface::Instance::new(&entry, &instance)
+        ash::khr::surface::Instance::new(entry, instance)
     }
 
     fn create_swapchain_loader(
         instance: &Instance,
         device: &Device,
     ) -> ash::khr::swapchain::Device {
-        ash::khr::swapchain::Device::new(&instance, &device)
+        ash::khr::swapchain::Device::new(instance, device)
     }
 
     fn create_surface(
@@ -383,7 +383,7 @@ impl MyAppCreator {
         let mut allocator = allocator.lock().unwrap();
 
         let image =
-            image::open("./examples/native_image/Mandrill.bmp").expect("Failed to open image file");
+            image::open("./examples/common/assets/Mandrill.bmp").expect("Failed to open image file");
         let (image_width, image_height) = (image.width(), image.height());
         let image_data = image.to_rgba8().into_raw();
 
@@ -681,7 +681,7 @@ impl AppCreator<Arc<Mutex<Allocator>>> for MyAppCreator {
             entry,
             instance,
             device,
-            debug_utils_loader: debug_utils_loader,
+            debug_utils_loader,
             debug_messenger,
             physical_device,
             surface_loader,

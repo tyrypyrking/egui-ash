@@ -1,4 +1,4 @@
-use crate::pane::Pane;
+use crate::common::pane::Pane;
 
 pub struct TreeBehavior;
 impl egui_tiles::Behavior<Pane> for TreeBehavior {

@@ -2,7 +2,8 @@ use ash::{vk, Device, Entry, Instance};
 use egui::FontData;
 use egui_ash::{
     raw_window_handle::{HasDisplayHandle as _, HasWindowHandle as _},
-    winit, App, AppCreator, AshRenderState, CreationContext, ExitSignal, RunOption, Theme,
+    winit::{self, window::Theme},
+    App, AppCreator, AshRenderState, CreationContext, ExitSignal, RunOption,
 };
 use gpu_allocator::vulkan::*;
 use std::{
@@ -36,7 +37,7 @@ impl App for MyApp {
             self.exit_signal.send(ExitCode::SUCCESS);
         }
 
-        egui::CentralPanel::default().show(&ctx, |ui| {
+        egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Hello");
             ui.label("Hello egui!");
             ui.separator();
@@ -47,7 +48,7 @@ impl App for MyApp {
             ui.horizontal(|ui| {
                 ui.label("Theme");
                 let id = ui.make_persistent_id("theme_combo_box_side");
-                egui::ComboBox::from_id_source(id)
+                egui::ComboBox::from_id_salt(id)
                     .selected_text(format!("{:?}", self.theme))
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut self.theme, Theme::Dark, "Dark");
@@ -68,7 +69,7 @@ impl App for MyApp {
                 .id(egui::Id::new("my_window"))
                 .resizable(true)
                 .scroll([true, true])
-                .show(&ctx, |ui| {
+                .show(ctx, |ui| {
                     ui.heading("Hello");
                     ui.label("Hello egui!");
                     ui.separator();
@@ -79,7 +80,7 @@ impl App for MyApp {
                     ui.horizontal(|ui| {
                         ui.label("Theme");
                         let id = ui.make_persistent_id("theme_combo_box_window");
-                        egui::ComboBox::from_id_source(id)
+                        egui::ComboBox::from_id_salt(id)
                             .selected_text(format!("{:?}", self.theme))
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(&mut self.theme, Theme::Dark, "Dark");
@@ -188,7 +189,7 @@ impl MyAppCreator {
             let name = ext.as_ptr();
             extension_names.push(name);
         }
-         #[cfg(any(target_os = "macos", target_os = "ios"))]
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
         {
             extension_names.push(vk::KhrPortabilityEnumerationFn::name().as_ptr());
             extension_names.push(vk::KhrGetPhysicalDeviceProperties2Fn::name().as_ptr());
@@ -223,7 +224,7 @@ impl MyAppCreator {
         };
 
         // setup debug utils
-        let debug_utils_loader = ash::ext::debug_utils::Instance::new(&entry, &instance);
+        let debug_utils_loader = ash::ext::debug_utils::Instance::new(entry, &instance);
         let debug_messenger = if Self::ENABLE_VALIDATION_LAYERS {
             unsafe {
                 debug_utils_loader
@@ -462,7 +463,9 @@ impl AppCreator<Arc<Mutex<Allocator>>> for MyAppCreator {
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
             "NotoSansJP".to_owned(),
-            FontData::from_static(include_bytes!("./fonts/NotoSansJP-VariableFont_wght.ttf")),
+            Arc::new(FontData::from_static(include_bytes!(
+                "../common/fonts/NotoSansJP-VariableFont_wght.ttf"
+            ))),
         );
         fonts
             .families

@@ -24,6 +24,12 @@ pub struct Scene {
 }
 impl Scene {
     pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Default for Scene {
+    fn default() -> Self {
         Self {
             background: Background {
                 color: [0.0, 0.2, 0.4],

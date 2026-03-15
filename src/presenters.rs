@@ -2,7 +2,7 @@ use anyhow::Result;
 use ash::{vk, Device, Entry, Instance};
 use egui_winit::winit;
 use raw_window_handle::{HasDisplayHandle as _, HasWindowHandle as _};
-use std::collections::HashMap;
+use std::collections::{hash_map::Entry as HashMapEntry, HashMap};
 
 use crate::{
     renderer::{EguiCommand, SwapchainUpdateInfo},
@@ -13,9 +13,8 @@ struct Presenter {
     width: u32,
     height: u32,
 
-    device: Device,
+    _device: Device,
     surface: vk::SurfaceKHR,
-    clear_color: [f32; 4],
     present_mode: vk::PresentModeKHR,
 
     swapchain: vk::SwapchainKHR,
@@ -53,14 +52,13 @@ impl Presenter {
         };
 
         // select swapchain format
-        let surface_format = surface_formats
+        let surface_format = *surface_formats
             .iter()
             .find(|surface_format| {
                 surface_format.format == vk::Format::B8G8R8A8_UNORM
                     && surface_format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
             })
-            .unwrap_or(&surface_formats[0])
-            .clone();
+            .unwrap_or(&surface_formats[0]);
 
         // select surface present mode
         let surface_present_mode = surface_present_modes
@@ -69,9 +67,7 @@ impl Presenter {
             .unwrap_or(&vk::PresentModeKHR::FIFO);
 
         // calculate extent
-        let surface_extent = if surface_capabilities.current_extent.width != u32::MAX {
-            surface_capabilities.current_extent
-        } else {
+        let surface_extent = if surface_capabilities.current_extent.width == u32::MAX {
             vk::Extent2D {
                 width: width.clamp(
                     surface_capabilities.min_image_extent.width,
@@ -82,6 +78,8 @@ impl Presenter {
                     surface_capabilities.max_image_extent.height,
                 ),
             }
+        } else {
+            surface_capabilities.current_extent
         };
 
         // get image count
@@ -167,6 +165,7 @@ impl Presenter {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create(
         entry: &Entry,
         instance: &Instance,
@@ -176,7 +175,6 @@ impl Presenter {
         swapchain_loader: &ash::khr::swapchain::Device,
         command_pool: vk::CommandPool,
         window: &winit::window::Window,
-        clear_color: [f32; 4],
         present_mode: vk::PresentModeKHR,
     ) -> Option<Self> {
         let width = window.inner_size().width;
@@ -235,9 +233,8 @@ impl Presenter {
             width,
             height,
 
-            device,
+            _device: device,
             surface,
-            clear_color,
             present_mode,
 
             swapchain,
@@ -277,21 +274,21 @@ impl Presenter {
         unsafe {
             device
                 .device_wait_idle()
-                .expect("Failed to wait device idle")
+                .expect("Failed to wait device idle");
         };
 
         // cleanup old swapchain and sync objects
         unsafe {
-            for &fence in self.in_flight_fences.iter() {
+            for &fence in &self.in_flight_fences {
                 device.destroy_fence(fence, None);
             }
-            for &semaphore in self.image_available_semaphores.iter() {
+            for &semaphore in &self.image_available_semaphores {
                 device.destroy_semaphore(semaphore, None);
             }
-            for &semaphore in self.render_finished_semaphores.iter() {
+            for &semaphore in &self.render_finished_semaphores {
                 device.destroy_semaphore(semaphore, None);
             }
-            for cmd in self.render_command_buffers.iter() {
+            for cmd in &self.render_command_buffers {
                 device.free_command_buffers(command_pool, std::slice::from_ref(cmd));
             }
             swapchain_loader.destroy_swapchain(self.swapchain, None);
@@ -358,7 +355,7 @@ impl Presenter {
         let result = unsafe {
             swapchain_loader.acquire_next_image(
                 self.swapchain,
-                std::u64::MAX,
+                u64::MAX,
                 self.image_available_semaphores[self.current_frame],
                 vk::Fence::null(),
             )
@@ -387,7 +384,7 @@ impl Presenter {
             device.begin_command_buffer(
                 self.render_command_buffers[self.current_frame],
                 &command_buffer_begin_info,
-            )?
+            )?;
         }
 
         // update swapchain
@@ -465,7 +462,7 @@ impl Presenter {
         let result = unsafe { swapchain_loader.queue_present(queue, &present_info) };
         let is_dirty_swapchain = match result {
             Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => true,
-            Err(error) => panic!("Failed to present queue. Cause: {}", error),
+            Err(error) => panic!("Failed to present queue. Cause: {error}"),
             _ => false,
         };
         self.dirty_flag = is_dirty_swapchain;
@@ -487,21 +484,21 @@ impl Presenter {
         unsafe {
             device
                 .device_wait_idle()
-                .expect("Failed to wait device idle")
+                .expect("Failed to wait device idle");
         };
 
         // cleanup old swapchain and sync objects
         unsafe {
-            for &fence in self.in_flight_fences.iter() {
+            for &fence in &self.in_flight_fences {
                 device.destroy_fence(fence, None);
             }
-            for &semaphore in self.image_available_semaphores.iter() {
+            for &semaphore in &self.image_available_semaphores {
                 device.destroy_semaphore(semaphore, None);
             }
-            for &semaphore in self.render_finished_semaphores.iter() {
+            for &semaphore in &self.render_finished_semaphores {
                 device.destroy_semaphore(semaphore, None);
             }
-            for cmd in self.render_command_buffers.iter() {
+            for cmd in &self.render_command_buffers {
                 device.free_command_buffers(command_pool, std::slice::from_ref(cmd));
             }
             swapchain_loader.destroy_swapchain(self.swapchain, None);
@@ -520,10 +517,10 @@ pub struct Presenters {
     queue: vk::Queue,
     command_pool: vk::CommandPool,
     presenters: HashMap<egui::ViewportId, Presenter>,
-    clear_color: [f32; 4],
     present_mode: vk::PresentModeKHR,
 }
 impl Presenters {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         entry: Entry,
         instance: Instance,
@@ -533,7 +530,6 @@ impl Presenters {
         swapchain_loader: ash::khr::swapchain::Device,
         queue: vk::Queue,
         command_pool: vk::CommandPool,
-        clear_color: [f32; 4],
         present_mode: vk::PresentModeKHR,
     ) -> Self {
         Self {
@@ -546,7 +542,6 @@ impl Presenters {
             queue,
             command_pool,
             presenters: HashMap::new(),
-            clear_color,
             present_mode,
         }
     }
@@ -575,7 +570,7 @@ impl Presenters {
             }
         });
 
-        if self.presenters.get(&viewport_id).is_none() {
+        if let HashMapEntry::Vacant(entry) = self.presenters.entry(viewport_id) {
             if let Some(presenter) = Presenter::create(
                 &self.entry,
                 &self.instance,
@@ -585,10 +580,9 @@ impl Presenters {
                 &self.swapchain_loader,
                 self.command_pool,
                 window,
-                self.clear_color,
                 self.present_mode,
             ) {
-                self.presenters.insert(viewport_id, presenter);
+                entry.insert(presenter);
             }
         }
     }
@@ -617,7 +611,7 @@ impl Presenters {
             .keys()
             .filter(|id| !active_viewport_ids.contains(id))
             .filter(|id| id != &&egui::ViewportId::ROOT)
-            .map(|id| id.clone())
+            .copied()
             .collect::<Vec<_>>();
 
         for id in remove_viewports {

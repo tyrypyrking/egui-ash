@@ -5,12 +5,11 @@ use std::{
     mem::ManuallyDrop,
     sync::{Arc, Mutex},
 };
+#[path = "../common/mod.rs"]
+mod common;
 
-mod scene_view;
-mod vkutils;
-
-use scene_view::SceneView;
-use vkutils::*;
+use common::scene_view::SimpleSceneView as SceneView;
+use common::vkutils::*;
 
 struct MyApp {
     _entry: Arc<Entry>,
@@ -28,7 +27,7 @@ struct MyApp {
 }
 impl App for MyApp {
     fn ui(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(&ctx, |ui| {
+        egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Scene View");
             ui.label("Hello scene view!");
             ui.separator();
@@ -42,7 +41,7 @@ impl App for MyApp {
                 .scroll([true, true])
                 .collapsible(false)
                 .default_size(egui::vec2(600.0, 300.0))
-                .show(&ctx, |ui| {
+                .show(ctx, |ui| {
                     ui.label("You can drag the scene view to rotate the 3D model.");
                     ui.add(&self.scene_view);
                 });

@@ -1,6 +1,7 @@
 use ash::{ext::debug_utils, vk, Device, Entry, Instance};
 use egui_ash::{
-    event, App, AppCreator, AshRenderState, CreationContext, HandleRedraw, RunOption, Theme,
+    event, winit::window::Theme, App, AppCreator, AshRenderState, CreationContext, HandleRedraw,
+    RunOption,
 };
 use gpu_allocator::vulkan::*;
 use std::{
@@ -8,12 +9,14 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-mod model_renderer;
 mod triangle_renderer;
-mod vkutils;
-use model_renderer::ModelRenderer;
+
+#[path = "../common/mod.rs"]
+mod common;
+
+use common::model_renderer::{ModelRenderer, ModelRendererCreationInfo};
+use common::vkutils::*;
 use triangle_renderer::TriangleRenderer;
-use vkutils::*;
 
 struct MyApp {
     entry: Arc<Entry>,
@@ -44,14 +47,14 @@ struct MyApp {
 }
 impl App for MyApp {
     fn ui(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("my_side_panel").show(&ctx, |ui| {
+        egui::SidePanel::left("my_side_panel").show(ctx, |ui| {
             ui.heading("Multi viewports");
             ui.label("Hello egui multi viewports!");
             ui.separator();
             ui.horizontal(|ui| {
                 ui.label("Theme");
                 let id = ui.make_persistent_id("theme_combo_box_side");
-                egui::ComboBox::from_id_source(id)
+                egui::ComboBox::from_id_salt(id)
                     .selected_text(format!("{:?}", self.theme))
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut self.theme, Theme::Dark, "Dark");
@@ -71,14 +74,14 @@ impl App for MyApp {
             .id(egui::Id::new("my_window"))
             .resizable(true)
             .scroll([true, true])
-            .show(&ctx, |ui| {
+            .show(ctx, |ui| {
                 ui.heading("Multi viewports");
                 ui.label("Hello egui multi viewports!");
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label("Theme");
                     let id = ui.make_persistent_id("theme_combo_box_window");
-                    egui::ComboBox::from_id_source(id)
+                    egui::ComboBox::from_id_salt(id)
                         .selected_text(format!("{:?}", self.theme))
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut self.theme, Theme::Dark, "Dark");
@@ -103,14 +106,14 @@ impl App for MyApp {
                         self.show_immediate_viewport = false;
                     }
 
-                    egui::CentralPanel::default().show(&ctx, |ui| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
                         ui.heading("Immediate Viewport");
                         ui.label("immediate viewport!");
                         ui.separator();
                         ui.horizontal(|ui| {
                             ui.label("Theme");
                             let id = ui.make_persistent_id("theme_combo_box_window");
-                            egui::ComboBox::from_id_source(id)
+                            egui::ComboBox::from_id_salt(id)
                                 .selected_text(format!("{:?}", self.theme))
                                 .show_ui(ui, |ui| {
                                     ui.selectable_value(&mut self.theme, Theme::Dark, "Dark");
@@ -147,7 +150,7 @@ impl App for MyApp {
 
                         let mut rotate_y = rotate_y.lock().unwrap();
                         let rotate_y = &mut *rotate_y;
-                        egui::SidePanel::left("my_deferred_side_panel").show(&ctx, |ui| {
+                        egui::SidePanel::left("my_deferred_side_panel").show(ctx, |ui| {
                             ui.heading("Deferred Viewport");
                             ui.label("deferred viewport!");
                             ui.separator();
@@ -158,7 +161,7 @@ impl App for MyApp {
                             .id(egui::Id::new("deferred-viewport-window"))
                             .resizable(true)
                             .scroll([true, true])
-                            .show(&ctx, |ui| {
+                            .show(ctx, |ui| {
                                 ui.heading("Deferred Viewport");
                                 ui.label("deferred viewport!");
                                 ui.separator();
@@ -190,21 +193,22 @@ impl App for MyApp {
                         self.surface_loader.destroy_surface(model_surface, None);
                     }
                 }
-                let surface = create_surface(&self.entry, &self.instance, &window);
+                let surface = create_surface(&self.entry, &self.instance, window);
                 self.model_surface = Some(surface);
-                self.model_renderer = Some(ModelRenderer::new(
-                    self.physical_device,
-                    self.device.clone(),
-                    self.surface_loader.clone(),
-                    self.swapchain_loader.clone(),
-                    self.allocator.clone(),
+                let renderer_creation_info = ModelRendererCreationInfo {
+                    physical_device: self.physical_device,
                     surface,
-                    self.queue_family_index,
-                    self.queue,
-                    self.command_pool,
-                    window.inner_size().width,
-                    window.inner_size().height,
-                ));
+                    queue_family_index: self.queue_family_index,
+                    queue: self.queue,
+                    command_pool: self.command_pool,
+                    device: self.device.clone(),
+                    surface_loader: self.surface_loader.clone(),
+                    swapchain_loader: self.swapchain_loader.clone(),
+                    allocator: (*self.allocator).clone(),
+                    width: window.inner_size().width,
+                    height: window.inner_size().height,
+                };
+                self.model_renderer = Some(ModelRenderer::new(renderer_creation_info));
             }
             _ => (),
         }

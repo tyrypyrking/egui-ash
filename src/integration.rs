@@ -1,13 +1,7 @@
-use egui::{
-    ahash::{HashMapExt, HashSet},
-    DeferredViewportUiCallback, ViewportIdMap,
-};
+use egui::{ahash::HashMapExt, DeferredViewportUiCallback, ViewportIdMap};
 #[cfg(feature = "accesskit")]
-use egui_winit::accesskit_winit::ActionRequestEvent;
-use egui_winit::winit::{
-    self,
-    event_loop::{EventLoop, EventLoopWindowTarget},
-};
+use egui_winit::accesskit_winit::Event as AccessKitEvent;
+use egui_winit::winit::{self, event_loop::ActiveEventLoop};
 use std::time::Instant;
 use std::{
     collections::HashMap,
@@ -26,11 +20,14 @@ use crate::AshRenderState;
 #[derive(Debug)]
 pub(crate) struct IntegrationEvent {
     #[cfg(feature = "accesskit")]
-    pub(crate) accesskit: egui_winit::accesskit_winit::ActionRequestEvent,
+    pub(crate) accesskit: AccessKitEvent,
 }
+
+pub(crate) type ViewportUiCallback = Arc<dyn Fn(&egui::Context) + Send + Sync>;
+
 #[cfg(feature = "accesskit")]
-impl From<ActionRequestEvent> for IntegrationEvent {
-    fn from(event: ActionRequestEvent) -> Self {
+impl From<AccessKitEvent> for IntegrationEvent {
+    fn from(event: AccessKitEvent) -> Self {
         Self {
             #[cfg(feature = "accesskit")]
             accesskit: event,
@@ -66,14 +63,16 @@ pub(crate) struct Integration<A: Allocator + 'static> {
     presenters: Arc<Mutex<Presenters>>,
     renderer: Arc<Mutex<Renderer<A>>>,
 
-    context: egui::Context,
+    pub(crate) context: egui::Context,
     window_id_to_viewport_id: Arc<Mutex<HashMap<winit::window::WindowId, egui::ViewportId>>>,
     viewports: Arc<Mutex<ViewportIdMap<Viewport>>>,
     focused_viewport: Arc<Mutex<Option<egui::ViewportId>>>,
     max_texture_side: usize,
 
+    theme: Option<winit::window::Theme>,
+
     #[cfg(feature = "persistence")]
-    storage: Storage,
+    pub(crate) storage: Storage,
     #[cfg(feature = "persistence")]
     persistent_windows: bool,
     #[cfg(feature = "persistence")]
@@ -81,16 +80,19 @@ pub(crate) struct Integration<A: Allocator + 'static> {
     #[cfg(feature = "persistence")]
     last_auto_save: Instant,
 }
+
 impl<A: Allocator + 'static> Integration<A> {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         app_id: &str,
-        event_loop: &EventLoop<IntegrationEvent>,
+        event_loop: &ActiveEventLoop,
         context: egui::Context,
         main_window: winit::window::Window,
         render_state: AshRenderState<A>,
-        clear_color: [f32; 4],
         present_mode: ash::vk::PresentModeKHR,
         receiver: ImageRegistryReceiver,
+        theme: Option<winit::window::Theme>,
+        #[cfg(feature = "accesskit")] event_loop_proxy: &winit::event_loop::EventLoopProxy<IntegrationEvent>,
         #[cfg(feature = "persistence")] storage: Storage,
         #[cfg(feature = "persistence")] persistent_windows: bool,
         #[cfg(feature = "persistence")] persistent_egui_memory: bool,
@@ -104,7 +106,6 @@ impl<A: Allocator + 'static> Integration<A> {
             render_state.swapchain_loader.clone(),
             render_state.queue,
             render_state.command_pool,
-            clear_color,
             present_mode,
         )));
         let renderer = Renderer::new(
@@ -142,6 +143,7 @@ impl<A: Allocator + 'static> Integration<A> {
             egui::ViewportId::ROOT,
             &event_loop,
             Some(main_window.scale_factor() as f32),
+            theme,
             Some(max_texture_side),
         );
 
@@ -164,19 +166,18 @@ impl<A: Allocator + 'static> Integration<A> {
 
         #[cfg(feature = "accesskit")]
         {
-            let ctx = context.clone();
-            let event_loop_proxy = event_loop.create_proxy();
+            //let ctx = context.clone();
             root_viewport.state.init_accesskit(
+                event_loop,
                 &root_viewport.window,
-                event_loop_proxy,
-                move || {
+                event_loop_proxy.clone(),
+                /*move || {
                     ctx.enable_accesskit();
                     ctx.request_repaint();
                     ctx.accesskit_placeholder_tree_update()
-                },
+                },*/
             );
         }
-
         {
             let mut viewports = viewports.lock().unwrap();
             viewports.insert(egui::ViewportId::ROOT, root_viewport);
@@ -191,6 +192,7 @@ impl<A: Allocator + 'static> Integration<A> {
             &window_id_to_viewport_id,
             &focused_viewport,
             max_texture_side,
+            theme,
             #[cfg(feature = "persistence")]
             &storage,
             #[cfg(feature = "persistence")]
@@ -211,6 +213,8 @@ impl<A: Allocator + 'static> Integration<A> {
             focused_viewport,
             max_texture_side,
 
+            theme,
+
             #[cfg(feature = "persistence")]
             storage,
             #[cfg(feature = "persistence")]
@@ -227,7 +231,7 @@ impl<A: Allocator + 'static> Integration<A> {
         window_id: winit::window::WindowId,
     ) -> Option<egui::ViewportId> {
         let window_id_to_viewport_id = self.window_id_to_viewport_id.lock().unwrap();
-        window_id_to_viewport_id.get(&window_id).map(|v| *v)
+        window_id_to_viewport_id.get(&window_id).copied()
     }
 
     pub(crate) fn get_viewport_size(
@@ -235,9 +239,7 @@ impl<A: Allocator + 'static> Integration<A> {
         viewport_id: egui::ViewportId,
     ) -> Option<winit::dpi::PhysicalSize<u32>> {
         let viewports = self.viewports.lock().unwrap();
-        let Some(viewport) = viewports.get(&viewport_id) else {
-            return None;
-        };
+        let viewport = viewports.get(&viewport_id)?;
         Some(viewport.window.inner_size())
     }
 
@@ -245,7 +247,7 @@ impl<A: Allocator + 'static> Integration<A> {
         &mut self,
         window_id: winit::window::WindowId,
         window_event: &winit::event::WindowEvent,
-        event_loop: &EventLoopWindowTarget<IntegrationEvent>,
+        event_loop: &ActiveEventLoop,
         follow_system_theme: bool,
         app: &mut impl crate::App,
     ) -> bool {
@@ -263,7 +265,7 @@ impl<A: Allocator + 'static> Integration<A> {
             match window_event {
                 winit::event::WindowEvent::ThemeChanged(theme) => {
                     if follow_system_theme {
-                        viewport.window.set_theme(Some(theme.clone()));
+                        viewport.window.set_theme(Some(*theme));
                     }
                 }
                 winit::event::WindowEvent::Focused(focused) => {
@@ -294,7 +296,7 @@ impl<A: Allocator + 'static> Integration<A> {
 
             let event_response = viewport
                 .state
-                .on_window_event(&viewport.window, &window_event);
+                .on_window_event(&viewport.window, window_event);
 
             if event_response.repaint {
                 viewport.window.request_redraw();
@@ -303,11 +305,8 @@ impl<A: Allocator + 'static> Integration<A> {
             event_response
         };
 
-        match window_event {
-            winit::event::WindowEvent::RedrawRequested => {
-                self.paint(event_loop, window_id, app);
-            }
-            _ => {}
+        if window_event == &winit::event::WindowEvent::RedrawRequested {
+            self.paint(event_loop, window_id, app);
         }
 
         event_response.consumed
@@ -316,26 +315,32 @@ impl<A: Allocator + 'static> Integration<A> {
     #[cfg(feature = "accesskit")]
     pub(crate) fn handle_accesskit_event(
         &mut self,
-        event: &ActionRequestEvent,
-        event_loop: &EventLoopWindowTarget<IntegrationEvent>,
-        control_flow: &mut winit::event_loop::ControlFlow,
+        event: &AccessKitEvent,
+        event_loop: &ActiveEventLoop,
         app: &mut impl crate::App,
     ) {
-        let ActionRequestEvent { window_id, request } = event;
+        let AccessKitEvent {
+            window_id,
+            window_event,
+        } = event;
         {
+            use egui_winit::accesskit_winit::WindowEvent;
+
             let Some(viewport_id) = self.viewport_id_from_window_id(*window_id) else {
                 return;
             };
             let mut viewports = self.viewports.lock().unwrap();
             let viewport = viewports.get_mut(&viewport_id).unwrap();
-            viewport.state.on_accesskit_action_request(request.clone());
+            if let WindowEvent::ActionRequested(request) = window_event {
+                viewport.state.on_accesskit_action_request(request.clone());
+            }
         }
-        self.paint(event_loop, control_flow, *window_id, app);
+        self.paint(event_loop, *window_id, app);
     }
 
     pub(crate) fn run_ui_and_record_paint_cmd(
         &mut self,
-        event_loop: &EventLoopWindowTarget<IntegrationEvent>,
+        event_loop: &ActiveEventLoop,
         app: &mut impl crate::App,
         window_id: winit::window::WindowId,
         create_swapchain_internal: bool,
@@ -436,15 +441,13 @@ impl<A: Allocator + 'static> Integration<A> {
                 let mut renderer = self.renderer.lock().unwrap();
 
                 let clipped_primitives = self.context.tessellate(shapes, pixels_per_point);
-                let egui_cmd = renderer.create_egui_cmd(
+                renderer.create_egui_cmd(
                     viewport.ids.this,
                     clipped_primitives,
                     textures_delta,
-                    self.context.zoom_factor(),
+                    viewport.window.scale_factor() as f32 * self.context.zoom_factor(),
                     viewport.window.inner_size(),
-                );
-
-                egui_cmd
+                )
             } else {
                 return (None, PaintResult::Wait);
             };
@@ -461,13 +464,14 @@ impl<A: Allocator + 'static> Integration<A> {
                     event_loop,
                     &mut window_id_to_viewport_id,
                     self.max_texture_side,
-                    &mut *viewports,
+                    &mut viewports,
                     *focused_viewport,
                     ids,
                     output.class,
                     output.builder.clone(),
                     output.viewport_ui_cb.clone(),
                     &mut window_initialized,
+                    self.theme,
                     #[cfg(feature = "persistence")]
                     &self.storage,
                     #[cfg(feature = "persistence")]
@@ -481,14 +485,14 @@ impl<A: Allocator + 'static> Integration<A> {
                 }
 
                 viewport.info.focused = Some(*focused_viewport == Some(viewport_id));
-                let mut _actions = HashSet::default();
+                let mut _actions = Vec::new();
                 egui_winit::process_viewport_commands(
                     &self.context,
                     &mut viewport.info,
                     output.commands.clone(),
                     &viewport.window,
                     &mut _actions,
-                )
+                );
             }
 
             if let Some(viewport) = viewports.get_mut(&viewport_id) {
@@ -528,7 +532,7 @@ impl<A: Allocator + 'static> Integration<A> {
 
     pub(crate) fn paint(
         &mut self,
-        event_loop: &EventLoopWindowTarget<IntegrationEvent>,
+        event_loop: &ActiveEventLoop,
         window_id: winit::window::WindowId,
         app: &mut impl crate::App,
     ) {
@@ -543,7 +547,7 @@ impl<A: Allocator + 'static> Integration<A> {
                     self.run_ui_and_record_paint_cmd(event_loop, app, window_id, true);
                 if let Some(egui_cmd) = egui_cmd {
                     self.present_egui(viewport_id, egui_cmd);
-                };
+                }
                 paint_result
             }
             crate::HandleRedraw::Handle(handler) => {
@@ -573,11 +577,7 @@ impl<A: Allocator + 'static> Integration<A> {
         }
     }
 
-    pub(crate) fn paint_all(
-        &mut self,
-        event_loop: &EventLoopWindowTarget<IntegrationEvent>,
-        app: &mut impl crate::App,
-    ) {
+    pub(crate) fn paint_all(&mut self, event_loop: &ActiveEventLoop, app: &mut impl crate::App) {
         let window_ids = {
             let window_id_to_viewport_id = self.window_id_to_viewport_id.lock().unwrap();
             window_id_to_viewport_id.keys().copied().collect::<Vec<_>>()
@@ -629,9 +629,10 @@ impl<A: Allocator + 'static> Integration<A> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn initialize_or_update_viewport<'vp>(
     context: &egui::Context,
-    event_loop: &EventLoopWindowTarget<IntegrationEvent>,
+    event_loop: &ActiveEventLoop,
     window_id_to_viewport_id: &mut HashMap<winit::window::WindowId, egui::ViewportId>,
     max_texture_side: usize,
     viewports: &'vp mut ViewportIdMap<Viewport>,
@@ -639,8 +640,9 @@ fn initialize_or_update_viewport<'vp>(
     ids: egui::ViewportIdPair,
     class: egui::ViewportClass,
     mut builder: egui::ViewportBuilder,
-    viewport_ui_cb: Option<Arc<dyn Fn(&egui::Context) + Send + Sync>>,
+    viewport_ui_cb: Option<ViewportUiCallback>,
     window_initialized: &mut bool,
+    theme: Option<winit::window::Theme>,
     #[cfg(feature = "persistence")] storage: &Storage,
     #[cfg(feature = "persistence")] persistent_windows: bool,
 ) -> &'vp mut Viewport {
@@ -657,7 +659,7 @@ fn initialize_or_update_viewport<'vp>(
             *window_initialized = true;
             let window = create_viewport_window(
                 event_loop,
-                &context,
+                context,
                 window_id_to_viewport_id,
                 ids.this,
                 builder.clone(),
@@ -671,6 +673,7 @@ fn initialize_or_update_viewport<'vp>(
                 ids.this,
                 event_loop,
                 Some(window.scale_factor() as f32),
+                theme,
                 Some(max_texture_side),
             );
             entry.insert(Viewport {
@@ -703,7 +706,7 @@ fn initialize_or_update_viewport<'vp>(
                 *window_initialized = true;
                 viewport.window = create_viewport_window(
                     event_loop,
-                    &context,
+                    context,
                     window_id_to_viewport_id,
                     ids.this,
                     builder.clone(),
@@ -717,14 +720,15 @@ fn initialize_or_update_viewport<'vp>(
                     ids.this,
                     event_loop,
                     Some(viewport.window.scale_factor() as f32),
+                    theme,
                     Some(max_texture_side),
                 );
                 viewport.is_first_frame = true;
             } else {
                 viewport.info.focused = Some(focused_viewport == Some(ids.this));
-                let mut _actions = HashSet::default();
+                let mut _actions = Vec::new();
                 egui_winit::process_viewport_commands(
-                    &context,
+                    context,
                     &mut viewport.info,
                     delta_commands,
                     &viewport.window,
@@ -738,7 +742,7 @@ fn initialize_or_update_viewport<'vp>(
 }
 
 fn create_viewport_window(
-    event_loop: &EventLoopWindowTarget<IntegrationEvent>,
+    event_loop: &ActiveEventLoop,
     context: &egui::Context,
     window_id_to_viewport_id: &mut HashMap<winit::window::WindowId, egui::ViewportId>,
     viewport_id: egui::ViewportId,
@@ -764,14 +768,12 @@ fn create_viewport_window(
 
         if let Some(window_settings) = window_settings {
             builder =
-                window_settings.initialize_viewport_builder(egui_zoom_factor, &event_loop, builder);
+                window_settings.initialize_viewport_builder(egui_zoom_factor, event_loop, builder);
         }
     }
 
-    let window = egui_winit::create_winit_window_builder(context, event_loop, builder.clone())
-        .with_visible(false)
-        .build(event_loop)
-        .expect("Failed to create window");
+    builder = builder.with_visible(false);
+    let window = egui_winit::create_window(context, event_loop, &builder).unwrap();
 
     egui_winit::apply_viewport_builder_to_window(context, &window, &builder);
 
@@ -782,7 +784,7 @@ fn create_viewport_window(
 
 #[cfg(feature = "persistence")]
 fn restore_main_window(
-    event_loop: &EventLoopWindowTarget<IntegrationEvent>,
+    event_loop: &ActiveEventLoop,
     context: &egui::Context,
     main_window: &winit::window::Window,
     storage: &Storage,
@@ -808,6 +810,7 @@ fn restore_main_window(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn immediate_viewport_renderer(
     presenters: &Arc<Mutex<Presenters>>,
     renderer: &Arc<Mutex<Renderer<impl Allocator>>>,
@@ -815,9 +818,10 @@ fn immediate_viewport_renderer(
     window_id_to_viewport_id: &Arc<Mutex<HashMap<winit::window::WindowId, egui::ViewportId>>>,
     focused_viewport: &Arc<Mutex<Option<egui::ViewportId>>>,
     max_texture_side: usize,
+    theme: Option<winit::window::Theme>,
     #[cfg(feature = "persistence")] storage: &Storage,
     #[cfg(feature = "persistence")] persistent_windows: bool,
-    event_loop: &EventLoop<IntegrationEvent>,
+    event_loop: &ActiveEventLoop,
 ) -> impl for<'b, 'a> Fn(&'b egui::Context, egui::ImmediateViewport<'a>) {
     let presenters = presenters.clone();
     let renderer = renderer.clone();
@@ -826,16 +830,12 @@ fn immediate_viewport_renderer(
     let focused_viewport = focused_viewport.clone();
     #[cfg(feature = "persistence")]
     let storage = storage.clone();
-    #[cfg(feature = "persistence")]
-    let persistent_windows = persistent_windows;
 
-    let event_loop: *const EventLoop<IntegrationEvent> = event_loop;
+    // SAFETY: the event loop lives longer than this callback
+    #[allow(unsafe_code)]
+    let event_loop = unsafe { std::ptr::from_ref::<ActiveEventLoop>(event_loop).as_ref().unwrap() };
 
-    move |ctx, immediate_viewport| {
-        // SAFETY: the event loop lives longer than this callback
-        #[allow(unsafe_code)]
-        let event_loop = unsafe { event_loop.as_ref().unwrap() };
-
+    move |ctx, mut immediate_viewport| {
         let mut renderer = renderer.lock().unwrap();
         let mut presenters = presenters.lock().unwrap();
         let mut viewports = viewports.lock().unwrap();
@@ -856,13 +856,14 @@ fn immediate_viewport_renderer(
                 immediate_viewport.builder,
                 None,
                 &mut window_initialized,
+                theme,
                 #[cfg(feature = "persistence")]
                 &storage,
                 #[cfg(feature = "persistence")]
                 persistent_windows,
             );
             if window_initialized {
-                presenters.recreate_swapchain_if_needed(viewport.ids.this, &viewport.window)
+                presenters.recreate_swapchain_if_needed(viewport.ids.this, &viewport.window);
             }
             egui_winit::apply_viewport_builder_to_window(ctx, &viewport.window, &viewport.builder);
 
@@ -882,11 +883,9 @@ fn immediate_viewport_renderer(
             pixels_per_point,
             viewport_output,
         } = {
-            let full_output = ctx.run(raw_input, |ctx| {
+            ctx.run(raw_input, |ctx| {
                 (immediate_viewport.viewport_ui_cb)(ctx);
-            });
-
-            full_output
+            })
         };
 
         let viewport = viewports.get_mut(&immediate_viewport.ids.this).unwrap();
@@ -918,35 +917,36 @@ fn immediate_viewport_renderer(
 
             let mut window_initialized = false;
             let viewport = initialize_or_update_viewport(
-                &ctx,
+                ctx,
                 event_loop,
                 &mut window_id_to_viewport_id,
                 max_texture_side,
-                &mut *viewports,
+                &mut viewports,
                 *focused_viewport,
                 ids,
                 output.class,
                 output.builder.clone(),
                 output.viewport_ui_cb.clone(),
                 &mut window_initialized,
+                theme,
                 #[cfg(feature = "persistence")]
                 &storage,
                 #[cfg(feature = "persistence")]
                 persistent_windows,
             );
             if window_initialized {
-                presenters.recreate_swapchain_if_needed(viewport.ids.this, &viewport.window)
+                presenters.recreate_swapchain_if_needed(viewport.ids.this, &viewport.window);
             }
 
             viewport.info.focused = Some(*focused_viewport == Some(viewport_id));
-            let mut _actions = HashSet::default();
+            let mut _actions = Vec::new();
             egui_winit::process_viewport_commands(
-                &ctx,
+                ctx,
                 &mut viewport.info,
                 output.commands.clone(),
                 &viewport.window,
                 &mut _actions,
-            )
+            );
         }
 
         // Prune dead viewports

@@ -2,14 +2,16 @@ use std::ffi::c_void;
 use std::ptr::NonNull;
 
 use anyhow::Result;
-use ash::vk::*;
+use ash::vk::{DeviceMemory, MemoryRequirements};
 
 /// Represents a memory allocation.
 pub trait Allocation: Send + Sync {
-    /// Returns the vk::DeviceMemory object that is backing this allocation.
+    /// Returns the `vk::DeviceMemory` object that is backing this allocation.
+    /// # Safety
+    /// TODO
     unsafe fn memory(&self) -> DeviceMemory;
 
-    /// Returns the offset of the allocation on the vk::DeviceMemory. When binding the memory to a buffer or image, this offset needs to be supplied as well.
+    /// Returns the offset of the allocation on the `vk::DeviceMemory`. When binding the memory to a buffer or image, this offset needs to be supplied as well.
     fn offset(&self) -> u64;
 
     /// Returns the size of the allocation

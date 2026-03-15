@@ -10,13 +10,6 @@ use crate::{
     Allocator, ExitSignal,
 };
 
-/// egui theme type.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum Theme {
-    Light,
-    Dark,
-}
-
 /// redraw handler type.
 pub type RedrawHandler = Box<dyn FnOnce(winit::dpi::PhysicalSize<u32>, EguiCommand) + Send>;
 
@@ -39,7 +32,7 @@ pub trait App {
     /// If you want to draw only egui, return [`HandleRedraw::Auto`].
     ///
     /// If you want to do your own Vulkan drawing in ash,
-    /// return [`HandleRedraw::Handle(RedrawHandle)`] with FnOnce of drawing.
+    /// return [`HandleRedraw::Handle(RedrawHandle)`] with `FnOnce` of drawing.
     /// NOTE: You must call `egui_cmd.update_swapchain` inside render function
     /// when you first render and when you recreate the swapchain.
     fn request_redraw(&mut self, _viewport_id: egui::ViewportId) -> HandleRedraw {

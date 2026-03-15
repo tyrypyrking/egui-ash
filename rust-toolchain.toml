@@ -1,0 +1,5 @@
+#For more settings refer to https://rust-lang.github.io/rustup/overrides.html#the-toolchain-file
+[toolchain]
+channel = "nightly"
+targets = [ "x86_64-unknown-linux-gnu" ]
+components = [ "clippy", "rustfmt", "rust-analyzer"]

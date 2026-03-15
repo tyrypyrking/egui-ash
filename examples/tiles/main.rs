@@ -6,17 +6,15 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-mod pane;
-mod scene;
-mod scene_view;
 mod tree_behavior;
-mod vkutils;
-
-use pane::Pane;
-use scene::Scene;
-use scene_view::SceneView;
 use tree_behavior::TreeBehavior;
-use vkutils::*;
+
+#[path = "../common/mod.rs"]
+mod common;
+use common::pane::Pane;
+use common::scene::Scene;
+use common::scene_view::SceneView;
+use common::vkutils::*;
 
 struct MyApp {
     _entry: Arc<Entry>,
@@ -147,7 +145,7 @@ impl AppCreator<Arc<Mutex<Allocator>>> for MyAppCreator {
             allocator: ManuallyDrop::new(allocator.clone()),
 
             scene_view: scene_view.clone(),
-            tree: pane::Pane::create_tree(scene.clone(), scene_view.clone()),
+            tree: common::pane::Pane::create_tree(scene.clone(), scene_view),
             tree_behavior: TreeBehavior,
         };
 
