@@ -92,7 +92,7 @@ impl<A: Allocator + 'static> Integration<A> {
         present_mode: ash::vk::PresentModeKHR,
         receiver: ImageRegistryReceiver,
         theme: Option<winit::window::Theme>,
-        event_loop_proxy: &winit::event_loop::EventLoopProxy<IntegrationEvent>,
+        _event_loop_proxy: &winit::event_loop::EventLoopProxy<IntegrationEvent>,
         #[cfg(feature = "persistence")] storage: Storage,
         #[cfg(feature = "persistence")] persistent_windows: bool,
         #[cfg(feature = "persistence")] persistent_egui_memory: bool,
@@ -492,7 +492,7 @@ impl<A: Allocator + 'static> Integration<A> {
                     output.commands.clone(),
                     &viewport.window,
                     &mut _actions,
-                )
+                );
             }
 
             if let Some(viewport) = viewports.get_mut(&viewport_id) {
@@ -547,7 +547,7 @@ impl<A: Allocator + 'static> Integration<A> {
                     self.run_ui_and_record_paint_cmd(event_loop, app, window_id, true);
                 if let Some(egui_cmd) = egui_cmd {
                     self.present_egui(viewport_id, egui_cmd);
-                };
+                }
                 paint_result
             }
             crate::HandleRedraw::Handle(handler) => {
@@ -833,7 +833,7 @@ fn immediate_viewport_renderer(
 
     // SAFETY: the event loop lives longer than this callback
     #[allow(unsafe_code)]
-    let event_loop = unsafe { (event_loop as *const ActiveEventLoop).as_ref().unwrap() };
+    let event_loop = unsafe { std::ptr::from_ref::<ActiveEventLoop>(event_loop).as_ref().unwrap() };
 
     move |ctx, mut immediate_viewport| {
         let mut renderer = renderer.lock().unwrap();
@@ -863,7 +863,7 @@ fn immediate_viewport_renderer(
                 persistent_windows,
             );
             if window_initialized {
-                presenters.recreate_swapchain_if_needed(viewport.ids.this, &viewport.window)
+                presenters.recreate_swapchain_if_needed(viewport.ids.this, &viewport.window);
             }
             egui_winit::apply_viewport_builder_to_window(ctx, &viewport.window, &viewport.builder);
 
@@ -935,7 +935,7 @@ fn immediate_viewport_renderer(
                 persistent_windows,
             );
             if window_initialized {
-                presenters.recreate_swapchain_if_needed(viewport.ids.this, &viewport.window)
+                presenters.recreate_swapchain_if_needed(viewport.ids.this, &viewport.window);
             }
 
             viewport.info.focused = Some(*focused_viewport == Some(viewport_id));
@@ -946,7 +946,7 @@ fn immediate_viewport_renderer(
                 output.commands.clone(),
                 &viewport.window,
                 &mut _actions,
-            )
+            );
         }
 
         // Prune dead viewports

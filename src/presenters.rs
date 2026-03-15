@@ -67,9 +67,7 @@ impl Presenter {
             .unwrap_or(&vk::PresentModeKHR::FIFO);
 
         // calculate extent
-        let surface_extent = if surface_capabilities.current_extent.width != u32::MAX {
-            surface_capabilities.current_extent
-        } else {
+        let surface_extent = if surface_capabilities.current_extent.width == u32::MAX {
             vk::Extent2D {
                 width: width.clamp(
                     surface_capabilities.min_image_extent.width,
@@ -80,6 +78,8 @@ impl Presenter {
                     surface_capabilities.max_image_extent.height,
                 ),
             }
+        } else {
+            surface_capabilities.current_extent
         };
 
         // get image count
@@ -274,21 +274,21 @@ impl Presenter {
         unsafe {
             device
                 .device_wait_idle()
-                .expect("Failed to wait device idle")
+                .expect("Failed to wait device idle");
         };
 
         // cleanup old swapchain and sync objects
         unsafe {
-            for &fence in self.in_flight_fences.iter() {
+            for &fence in &self.in_flight_fences {
                 device.destroy_fence(fence, None);
             }
-            for &semaphore in self.image_available_semaphores.iter() {
+            for &semaphore in &self.image_available_semaphores {
                 device.destroy_semaphore(semaphore, None);
             }
-            for &semaphore in self.render_finished_semaphores.iter() {
+            for &semaphore in &self.render_finished_semaphores {
                 device.destroy_semaphore(semaphore, None);
             }
-            for cmd in self.render_command_buffers.iter() {
+            for cmd in &self.render_command_buffers {
                 device.free_command_buffers(command_pool, std::slice::from_ref(cmd));
             }
             swapchain_loader.destroy_swapchain(self.swapchain, None);
@@ -384,7 +384,7 @@ impl Presenter {
             device.begin_command_buffer(
                 self.render_command_buffers[self.current_frame],
                 &command_buffer_begin_info,
-            )?
+            )?;
         }
 
         // update swapchain
@@ -462,7 +462,7 @@ impl Presenter {
         let result = unsafe { swapchain_loader.queue_present(queue, &present_info) };
         let is_dirty_swapchain = match result {
             Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => true,
-            Err(error) => panic!("Failed to present queue. Cause: {}", error),
+            Err(error) => panic!("Failed to present queue. Cause: {error}"),
             _ => false,
         };
         self.dirty_flag = is_dirty_swapchain;
@@ -484,21 +484,21 @@ impl Presenter {
         unsafe {
             device
                 .device_wait_idle()
-                .expect("Failed to wait device idle")
+                .expect("Failed to wait device idle");
         };
 
         // cleanup old swapchain and sync objects
         unsafe {
-            for &fence in self.in_flight_fences.iter() {
+            for &fence in &self.in_flight_fences {
                 device.destroy_fence(fence, None);
             }
-            for &semaphore in self.image_available_semaphores.iter() {
+            for &semaphore in &self.image_available_semaphores {
                 device.destroy_semaphore(semaphore, None);
             }
-            for &semaphore in self.render_finished_semaphores.iter() {
+            for &semaphore in &self.render_finished_semaphores {
                 device.destroy_semaphore(semaphore, None);
             }
-            for cmd in self.render_command_buffers.iter() {
+            for cmd in &self.render_command_buffers {
                 device.free_command_buffers(command_pool, std::slice::from_ref(cmd));
             }
             swapchain_loader.destroy_swapchain(self.swapchain, None);

@@ -139,7 +139,7 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
             let bytes_code = include_bytes!("shaders/spv/vert.spv");
             let shader_module_create_info = vk::ShaderModuleCreateInfo {
                 code_size: bytes_code.len(),
-                p_code: bytes_code.as_ptr() as *const u32,
+                p_code: bytes_code.as_ptr().cast::<u32>(),
                 ..Default::default()
             };
             unsafe { device.create_shader_module(&shader_module_create_info, None) }
@@ -149,7 +149,7 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
             let bytes_code = include_bytes!("shaders/spv/frag.spv");
             let shader_module_create_info = vk::ShaderModuleCreateInfo {
                 code_size: bytes_code.len(),
-                p_code: bytes_code.as_ptr() as *const u32,
+                p_code: bytes_code.as_ptr().cast::<u32>(),
                 ..Default::default()
             };
             unsafe { device.create_shader_module(&shader_module_create_info, None) }
@@ -351,7 +351,7 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
                         vertex_buffer_allocation.memory(),
                         vertex_buffer_allocation.offset(),
                     )
-                    .expect("Failed to create vertex buffer.")
+                    .expect("Failed to create vertex buffer.");
             }
 
             let index_buffer = unsafe {
@@ -382,7 +382,7 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
                         index_buffer_allocation.memory(),
                         index_buffer_allocation.offset(),
                     )
-                    .expect("Failed to create index buffer.")
+                    .expect("Failed to create index buffer.");
             }
 
             vertex_buffers.push(vertex_buffer);
@@ -553,13 +553,13 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
                     let mut vertex_buffer_ptr = state.vertex_buffer_allocations[index]
                         .mapped_ptr()
                         .unwrap()
-                        .as_ptr() as *mut u8;
+                        .as_ptr().cast::<u8>();
                     let vertex_buffer_ptr_end =
                         unsafe { vertex_buffer_ptr.add(Self::vertex_buffer_size() as usize) };
                     let mut index_buffer_ptr = state.index_buffer_allocations[index]
                         .mapped_ptr()
                         .unwrap()
-                        .as_ptr() as *mut u8;
+                        .as_ptr().cast::<u8>();
                     let index_buffer_ptr_end =
                         unsafe { index_buffer_ptr.add(Self::index_buffer_size() as usize) };
 
@@ -691,10 +691,10 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
 
                         // map memory
                         unsafe {
-                            vertex_buffer_ptr.copy_from(v_slice.as_ptr() as *const u8, v_copy_size)
+                            vertex_buffer_ptr.copy_from(v_slice.as_ptr().cast::<u8>(), v_copy_size);
                         };
                         unsafe {
-                            index_buffer_ptr.copy_from(i_slice.as_ptr() as *const u8, i_copy_size)
+                            index_buffer_ptr.copy_from(i_slice.as_ptr().cast::<u8>(), i_copy_size);
                         };
 
                         vertex_buffer_ptr = vertex_buffer_ptr_next;
@@ -778,7 +778,7 @@ impl<A: Allocator + 'static> ViewportRenderer<A> {
             unsafe {
                 self.device
                     .device_wait_idle()
-                    .expect("Failed to wait device idle")
+                    .expect("Failed to wait device idle");
             };
 
             // destroy state
@@ -888,7 +888,7 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
                 image
                     .pixels
                     .iter()
-                    .flat_map(|color| color.to_array())
+                    .flat_map(egui::Color32::to_array)
                     .collect()
             }
         };
@@ -941,11 +941,11 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
             unsafe {
                 self.device
                     .bind_buffer_memory(texture_buffer, allocation.memory(), allocation.offset())
-                    .unwrap()
+                    .unwrap();
             };
             (texture_buffer, allocation)
         };
-        let ptr = staging_allocation.mapped_ptr().unwrap().as_ptr() as *mut u8;
+        let ptr = staging_allocation.mapped_ptr().unwrap().as_ptr().cast::<u8>();
         unsafe {
             ptr.copy_from_nonoverlapping(data.as_ptr(), data.len());
         }
@@ -990,7 +990,7 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
             unsafe {
                 self.device
                     .bind_image_memory(handle, allocation.memory(), allocation.offset())
-                    .unwrap()
+                    .unwrap();
             };
             (handle, allocation)
         };
@@ -1360,7 +1360,7 @@ impl<A: Allocator + 'static> ManagedTextures<A> {
         unsafe {
             device
                 .device_wait_idle()
-                .expect("Failed to wait device idle")
+                .expect("Failed to wait device idle");
         };
 
         // destroy images
@@ -1398,6 +1398,7 @@ impl ImageRegistry {
         )
     }
 
+    #[must_use] 
     pub fn register_user_texture(
         &self,
         image_view: vk::ImageView,
@@ -1520,7 +1521,7 @@ impl UserTextures {
                     id,
                 } => match id {
                     egui::TextureId::Managed(_) => {
-                        panic!("This texture id is not for user texture: {:?}", id)
+                        panic!("This texture id is not for user texture: {id:?}")
                     }
                     egui::TextureId::User(id) => {
                         self.register_user_texture(id, image_view, sampler);
@@ -1528,7 +1529,7 @@ impl UserTextures {
                 },
                 RegistryCommand::UnregisterUserTexture { id } => match id {
                     egui::TextureId::Managed(_) => {
-                        panic!("This texture id is not for user texture: {:?}", id)
+                        panic!("This texture id is not for user texture: {id:?}")
                     }
                     egui::TextureId::User(id) => {
                         self.unregister_user_texture(id);
@@ -1664,7 +1665,7 @@ impl<A: Allocator + 'static> Renderer<A> {
         unsafe {
             self.device
                 .device_wait_idle()
-                .expect("Failed to wait device idle")
+                .expect("Failed to wait device idle");
         };
 
         self.managed_textures
@@ -1715,6 +1716,7 @@ impl EguiCommand {
     }
 
     /// Returns whether swapchain recreation is required.
+    #[must_use] 
     pub fn swapchain_recreate_required(&self) -> bool {
         self.swapchain_recreate_required
     }

@@ -36,7 +36,7 @@ pub struct RunOption {
     pub persistent_windows: bool,
     #[cfg(feature = "persistence")]
     pub persistent_egui_memory: bool,
-    /// vk::PresentModeKHR
+    /// `vk::PresentModeKHR`
     pub present_mode: ash::vk::PresentModeKHR,
 }
 impl Default for RunOption {
@@ -71,7 +71,7 @@ impl ExitSignal {
 ///
 /// ```
 /// egui_winit_ash::run("my_app", MyAppCreator, RunOption::default());
-/// 
+///
 /// ```
 pub fn run<C: AppCreator<A> + 'static, A: Allocator + 'static>(
     app_id: impl Into<String>,
@@ -180,12 +180,12 @@ where
     fn create_window(
         &mut self,
         event_loop: &ActiveEventLoop,
-        context: &egui::Context,
+        _context: &egui::Context,
     ) -> winit::window::Window {
         let window_attributes = WindowAttributes::default()
             .with_visible(false)
             .with_title("egui-ash");
-        return event_loop.create_window(window_attributes).unwrap();
+        event_loop.create_window(window_attributes).unwrap();
 
         let window_attributes = WindowAttributes::default().with_visible(false);
         event_loop.create_window(window_attributes).unwrap()
