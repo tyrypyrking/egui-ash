@@ -2,7 +2,8 @@ use ash::{vk, Device, Entry, Instance};
 use egui::FontData;
 use egui_ash::{
     raw_window_handle::{HasDisplayHandle as _, HasWindowHandle as _},
-    winit::{self, window::Theme}, App, AppCreator, AshRenderState, CreationContext, ExitSignal, RunOption,
+    winit::{self, window::Theme},
+    App, AppCreator, AshRenderState, CreationContext, ExitSignal, RunOption,
 };
 use gpu_allocator::vulkan::*;
 use std::{
@@ -188,7 +189,7 @@ impl MyAppCreator {
             let name = ext.as_ptr();
             extension_names.push(name);
         }
-         #[cfg(any(target_os = "macos", target_os = "ios"))]
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
         {
             extension_names.push(vk::KhrPortabilityEnumerationFn::name().as_ptr());
             extension_names.push(vk::KhrGetPhysicalDeviceProperties2Fn::name().as_ptr());
@@ -462,7 +463,9 @@ impl AppCreator<Arc<Mutex<Allocator>>> for MyAppCreator {
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
             "NotoSansJP".to_owned(),
-            Arc::new(FontData::from_static(include_bytes!("../common/fonts/NotoSansJP-VariableFont_wght.ttf"))),
+            Arc::new(FontData::from_static(include_bytes!(
+                "../common/fonts/NotoSansJP-VariableFont_wght.ttf"
+            ))),
         );
         fonts
             .families

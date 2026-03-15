@@ -1,7 +1,4 @@
-use egui::{
-    ahash::{HashMapExt, HashSet},
-    DeferredViewportUiCallback, ViewportIdMap,
-};
+use egui::{ahash::HashMapExt, DeferredViewportUiCallback, ViewportIdMap};
 #[cfg(feature = "accesskit")]
 use egui_winit::accesskit_winit::Event as AccessKitEvent;
 use egui_winit::winit::{self, event_loop::ActiveEventLoop};
@@ -488,7 +485,7 @@ impl<A: Allocator + 'static> Integration<A> {
                 }
 
                 viewport.info.focused = Some(*focused_viewport == Some(viewport_id));
-                let mut _actions = HashSet::default();
+                let mut _actions = Vec::new();
                 egui_winit::process_viewport_commands(
                     &self.context,
                     &mut viewport.info,
@@ -729,7 +726,7 @@ fn initialize_or_update_viewport<'vp>(
                 viewport.is_first_frame = true;
             } else {
                 viewport.info.focused = Some(focused_viewport == Some(ids.this));
-                let mut _actions = HashSet::default();
+                let mut _actions = Vec::new();
                 egui_winit::process_viewport_commands(
                     context,
                     &mut viewport.info,
@@ -836,8 +833,7 @@ fn immediate_viewport_renderer(
 
     // SAFETY: the event loop lives longer than this callback
     #[allow(unsafe_code)]
-    let event_loop =
-        unsafe { (event_loop as *const ActiveEventLoop).as_ref().unwrap() };
+    let event_loop = unsafe { (event_loop as *const ActiveEventLoop).as_ref().unwrap() };
 
     move |ctx, mut immediate_viewport| {
         let mut renderer = renderer.lock().unwrap();
@@ -943,7 +939,7 @@ fn immediate_viewport_renderer(
             }
 
             viewport.info.focused = Some(*focused_viewport == Some(viewport_id));
-            let mut _actions = HashSet::default();
+            let mut _actions = Vec::new();
             egui_winit::process_viewport_commands(
                 ctx,
                 &mut viewport.info,

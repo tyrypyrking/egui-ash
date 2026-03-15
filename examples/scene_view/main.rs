@@ -8,7 +8,7 @@ use std::{
 #[path = "../common/mod.rs"]
 mod common;
 
-use common::scene_view::SceneView;
+use common::scene_view::SimpleSceneView as SceneView;
 use common::vkutils::*;
 
 struct MyApp {

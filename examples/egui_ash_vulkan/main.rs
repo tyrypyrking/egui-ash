@@ -13,23 +13,23 @@ mod common;
 use common::model_renderer;
 use common::vkutils::*;
 
-use model_renderer::{Renderer, RendererInnerCreationInfo};
+use model_renderer::{ModelRenderer, ModelRendererCreationInfo};
 
 struct MyApp {
     entry: Entry,
     instance: Instance,
-    device: Device,
+    device: Arc<Device>,
     debug_utils_loader: debug_utils::Instance,
     debug_messenger: vk::DebugUtilsMessengerEXT,
     physical_device: vk::PhysicalDevice,
-    surface_loader: ash::khr::surface::Instance,
-    swapchain_loader: ash::khr::swapchain::Device,
+    surface_loader: Arc<ash::khr::surface::Instance>,
+    swapchain_loader: Arc<ash::khr::swapchain::Device>,
     surface: vk::SurfaceKHR,
     queue: vk::Queue,
     command_pool: vk::CommandPool,
     allocator: ManuallyDrop<Arc<Mutex<Allocator>>>,
 
-    renderer: Renderer,
+    renderer: ModelRenderer,
 
     theme: Theme,
     text: String,
@@ -170,7 +170,11 @@ impl AppCreator<Arc<Mutex<Allocator>>> for MyAppCreator {
         // setup context
         cc.context.set_visuals(egui::style::Visuals::dark());
 
-        let renderer_info = RendererInnerCreationInfo {
+        let device = Arc::new(device);
+        let surface_loader = Arc::new(surface_loader);
+        let swapchain_loader = Arc::new(swapchain_loader);
+
+        let renderer_info = ModelRendererCreationInfo {
             physical_device,
             device: device.clone(),
             surface_loader: surface_loader.clone(),
@@ -184,7 +188,7 @@ impl AppCreator<Arc<Mutex<Allocator>>> for MyAppCreator {
             height: 800,
         };
 
-        let renderer = Renderer::new(renderer_info);
+        let renderer = ModelRenderer::new(renderer_info);
 
         let app = MyApp {
             entry,
@@ -214,9 +218,9 @@ impl AppCreator<Arc<Mutex<Allocator>>> for MyAppCreator {
             entry: app.entry.clone(),
             instance: app.instance.clone(),
             physical_device: app.physical_device,
-            device: app.device.clone(),
-            surface_loader: app.surface_loader.clone(),
-            swapchain_loader: app.swapchain_loader.clone(),
+            device: (*app.device).clone(),
+            surface_loader: (*app.surface_loader).clone(),
+            swapchain_loader: (*app.swapchain_loader).clone(),
             queue: app.queue,
             queue_family_index,
             command_pool: app.command_pool,

@@ -1,3 +1,8 @@
+//! Swapchain-based model renderer for examples that draw the Suzanne mesh
+//! directly to a window surface alongside egui.
+//!
+//! Used by the `egui_ash_vulkan` and `multi_viewports` examples.
+
 use ash::{vk, Device};
 use egui_ash::EguiCommand;
 use glam::{Mat4, Vec3};
@@ -14,37 +19,44 @@ use crate::common::render::{
     load_model_and_create_vertex_buffer, FrameBufferInfo, UniformBufferObject,
 };
 
-struct RendererInner {
+// ── Inner state ───────────────────────────────────────────────────────────────
+
+struct ModelRendererInner {
     width: u32,
     height: u32,
 
     physical_device: vk::PhysicalDevice,
-    device: Device,
-    surface_loader: ash::khr::surface::Instance,
-    swapchain_loader: ash::khr::swapchain::Device,
+    device: Arc<Device>,
+    surface_loader: Arc<ash::khr::surface::Instance>,
+    swapchain_loader: Arc<ash::khr::swapchain::Device>,
     allocator: ManuallyDrop<Arc<Mutex<Allocator>>>,
     surface: vk::SurfaceKHR,
     queue: vk::Queue,
+    queue_family_index: u32,
 
     swapchain: vk::SwapchainKHR,
     surface_format: vk::SurfaceFormatKHR,
     surface_extent: vk::Extent2D,
     swapchain_images: Vec<vk::Image>,
+
     uniform_buffers: Vec<vk::Buffer>,
     uniform_buffer_allocations: Vec<Allocation>,
     descriptor_pool: vk::DescriptorPool,
     descriptor_set_layouts: Vec<vk::DescriptorSetLayout>,
     descriptor_sets: Vec<vk::DescriptorSet>,
+
     render_pass: vk::RenderPass,
     framebuffers: Vec<vk::Framebuffer>,
     depth_images_and_allocations: Vec<(vk::Image, Allocation)>,
     color_image_views: Vec<vk::ImageView>,
     depth_image_views: Vec<vk::ImageView>,
+
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     vertex_buffer: vk::Buffer,
     vertex_buffer_allocation: Option<Allocation>,
     vertex_count: u32,
+
     command_buffers: Vec<vk::CommandBuffer>,
     in_flight_fences: Vec<vk::Fence>,
     image_available_semaphores: Vec<vk::Semaphore>,
@@ -52,117 +64,156 @@ struct RendererInner {
     current_frame: usize,
     dirty_swapchain: bool,
 }
-impl RendererInner {
-    pub fn recreate_swapchain(&mut self, width: u32, height: u32, egui_cmd: &mut EguiCommand) {
+
+impl ModelRendererInner {
+    fn new(info: ModelRendererCreationInfo) -> Self {
+        let ModelRendererCreationInfo {
+            physical_device,
+            device,
+            surface_loader,
+            swapchain_loader,
+            allocator,
+            surface,
+            queue_family_index,
+            queue,
+            command_pool,
+            width,
+            height,
+        } = info;
+
+        let (swapchain, surface_format, surface_extent, swapchain_images) = create_swapchain(
+            physical_device,
+            &surface_loader,
+            &swapchain_loader,
+            surface,
+            queue_family_index,
+            width,
+            height,
+        );
+        let (uniform_buffers, uniform_buffer_allocations) = create_uniform_buffers(
+            &device,
+            &allocator,
+            swapchain_images.len(),
+            std::mem::size_of::<UniformBufferObject>() as u64,
+        );
+        let descriptor_pool = create_descriptor_pool(&device, swapchain_images.len());
+        let descriptor_set_layouts =
+            create_descriptor_set_layouts(&device, swapchain_images.len());
+        let descriptor_sets = create_descriptor_sets(
+            &device,
+            descriptor_pool,
+            &descriptor_set_layouts,
+            &uniform_buffers,
+        );
+        let render_pass = create_render_pass(&device, surface_format);
+        let FrameBufferInfo {
+            framebuffers,
+            depth_images_and_allocations,
+            color_image_views,
+            depth_image_views,
+        } = create_framebuffers(
+            &device,
+            &allocator,
+            render_pass,
+            surface_format,
+            surface_extent,
+            &swapchain_images,
+        );
+        let (pipeline, pipeline_layout) =
+            create_graphics_pipeline(&device, &descriptor_set_layouts, render_pass);
+        let (vertex_buffer, vertex_buffer_allocation, vertex_count) =
+            load_model_and_create_vertex_buffer(&device, &allocator, command_pool, queue);
+        let command_buffers =
+            create_command_buffers(&device, command_pool, swapchain_images.len());
+        let (in_flight_fences, image_available_semaphores, render_finished_semaphores) =
+            create_sync_objects(&device, swapchain_images.len());
+
+        Self {
+            width,
+            height,
+            physical_device,
+            device,
+            surface_loader,
+            swapchain_loader,
+            allocator: ManuallyDrop::new(allocator),
+            surface,
+            queue,
+            queue_family_index,
+            swapchain,
+            surface_format,
+            surface_extent,
+            swapchain_images,
+            uniform_buffers,
+            uniform_buffer_allocations,
+            descriptor_pool,
+            descriptor_set_layouts,
+            descriptor_sets,
+            render_pass,
+            framebuffers,
+            depth_images_and_allocations,
+            color_image_views,
+            depth_image_views,
+            pipeline,
+            pipeline_layout,
+            vertex_buffer,
+            vertex_buffer_allocation: Some(vertex_buffer_allocation),
+            vertex_count,
+            command_buffers,
+            in_flight_fences,
+            image_available_semaphores,
+            render_finished_semaphores,
+            current_frame: 0,
+            dirty_swapchain: true,
+        }
+    }
+
+    /// Rebuild the swapchain and all per-image resources after a resize or
+    /// out-of-date notification.
+    fn recreate_swapchain(&mut self, width: u32, height: u32, egui_cmd: &mut EguiCommand) {
         unsafe {
             self.device
                 .device_wait_idle()
-                .expect("Failed to wait device idle")
-        };
+                .expect("Failed to wait device idle");
 
-        unsafe {
             let mut allocator = self.allocator.lock().unwrap();
-            for &fence in self.in_flight_fences.iter() {
+            for &fence in &self.in_flight_fences {
                 self.device.destroy_fence(fence, None);
             }
-            for &semaphore in self.image_available_semaphores.iter() {
-                self.device.destroy_semaphore(semaphore, None);
+            for &sem in &self.image_available_semaphores {
+                self.device.destroy_semaphore(sem, None);
             }
-            for &semaphore in self.render_finished_semaphores.iter() {
-                self.device.destroy_semaphore(semaphore, None);
+            for &sem in &self.render_finished_semaphores {
+                self.device.destroy_semaphore(sem, None);
             }
-            for &framebuffer in self.framebuffers.iter() {
-                self.device.destroy_framebuffer(framebuffer, None);
+            for &fb in &self.framebuffers {
+                self.device.destroy_framebuffer(fb, None);
             }
-            for &image_view in self.color_image_views.iter() {
-                self.device.destroy_image_view(image_view, None);
+            for &view in &self.color_image_views {
+                self.device.destroy_image_view(view, None);
             }
-            for &image_view in self.depth_image_views.iter() {
-                self.device.destroy_image_view(image_view, None);
+            for &view in &self.depth_image_views {
+                self.device.destroy_image_view(view, None);
             }
-            for (image, allocation) in self.depth_images_and_allocations.drain(..) {
-                self.device.destroy_image(image, None);
-                allocator.free(allocation).expect("Failed to free memory");
+            for (img, alloc) in self.depth_images_and_allocations.drain(..) {
+                self.device.destroy_image(img, None);
+                allocator.free(alloc).expect("Failed to free memory");
             }
             self.device.destroy_render_pass(self.render_pass, None);
-            self.swapchain_loader
-                .destroy_swapchain(self.swapchain, None);
+            self.swapchain_loader.destroy_swapchain(self.swapchain, None);
         }
 
         self.width = width;
         self.height = height;
 
-        let (swapchain, swapchain_images, surface_format, surface_extent) = {
-            let surface_capabilities = unsafe {
-                self.surface_loader
-                    .get_physical_device_surface_capabilities(self.physical_device, self.surface)
-                    .expect("Failed to get physical device surface capabilities")
-            };
-            let surface_formats = unsafe {
-                self.surface_loader
-                    .get_physical_device_surface_formats(self.physical_device, self.surface)
-                    .expect("Failed to get physical device surface formats")
-            };
-
-            let surface_format = surface_formats
-                .iter()
-                .find(|surface_format| {
-                    surface_format.format == vk::Format::B8G8R8A8_UNORM
-                        || surface_format.format == vk::Format::R8G8B8A8_UNORM
-                })
-                .unwrap_or(&surface_formats[0]);
-
-            let surface_present_mode = vk::PresentModeKHR::FIFO;
-
-            let surface_extent = if surface_capabilities.current_extent.width != u32::MAX {
-                surface_capabilities.current_extent
-            } else {
-                vk::Extent2D {
-                    width: self.width.clamp(
-                        surface_capabilities.min_image_extent.width,
-                        surface_capabilities.max_image_extent.width,
-                    ),
-                    height: self.height.clamp(
-                        surface_capabilities.min_image_extent.height,
-                        surface_capabilities.max_image_extent.height,
-                    ),
-                }
-            };
-
-            let image_count = surface_capabilities.min_image_count + 1;
-            let image_count = if surface_capabilities.max_image_count != 0 {
-                image_count.min(surface_capabilities.max_image_count)
-            } else {
-                image_count
-            };
-
-            let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
-                .surface(self.surface)
-                .min_image_count(image_count)
-                .image_color_space(surface_format.color_space)
-                .image_format(surface_format.format)
-                .image_extent(surface_extent)
-                .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
-                .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-                .pre_transform(surface_capabilities.current_transform)
-                .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-                .present_mode(surface_present_mode)
-                .image_array_layers(1)
-                .clipped(true);
-            let swapchain = unsafe {
-                self.swapchain_loader
-                    .create_swapchain(&swapchain_create_info, None)
-                    .expect("Failed to create swapchain")
-            };
-
-            let swapchain_images = unsafe {
-                self.swapchain_loader
-                    .get_swapchain_images(swapchain)
-                    .expect("Failed to get swapchain images")
-            };
-
-            (swapchain, swapchain_images, *surface_format, surface_extent)
-        };
+        let (swapchain, surface_format, surface_extent, swapchain_images) = create_swapchain(
+            self.physical_device,
+            &self.surface_loader,
+            &self.swapchain_loader,
+            self.surface,
+            self.queue_family_index,
+            width,
+            height,
+        );
         self.swapchain = swapchain;
         self.swapchain_images = swapchain_images;
         self.surface_format = surface_format;
@@ -205,104 +256,6 @@ impl RendererInner {
         self.dirty_swapchain = false;
     }
 
-    fn new(create_info: RendererInnerCreationInfo) -> Self {
-        let RendererInnerCreationInfo {
-            physical_device,
-            device,
-            surface_loader,
-            swapchain_loader,
-            allocator,
-            surface,
-            queue_family_index,
-            queue,
-            command_pool,
-            width,
-            height,
-        } = create_info;
-
-        let (swapchain, surface_format, surface_extent, swapchain_images) = create_swapchain(
-            physical_device,
-            &surface_loader,
-            &swapchain_loader,
-            surface,
-            queue_family_index,
-            width,
-            height,
-        );
-        let (uniform_buffers, uniform_buffer_allocations) = create_uniform_buffers(
-            &device,
-            &allocator,
-            swapchain_images.len(),
-            std::mem::size_of::<UniformBufferObject>() as u64,
-        );
-        let descriptor_pool = create_descriptor_pool(&device, swapchain_images.len());
-        let descriptor_set_layouts = create_descriptor_set_layouts(&device, swapchain_images.len());
-        let descriptor_sets = create_descriptor_sets(
-            &device,
-            descriptor_pool,
-            &descriptor_set_layouts,
-            &uniform_buffers,
-        );
-        let render_pass = create_render_pass(&device, surface_format);
-        let FrameBufferInfo {
-            framebuffers,
-            depth_images_and_allocations,
-            color_image_views,
-            depth_image_views,
-        } = create_framebuffers(
-            &device,
-            &allocator,
-            render_pass,
-            surface_format,
-            surface_extent,
-            &swapchain_images,
-        );
-        let (pipeline, pipeline_layout) =
-            create_graphics_pipeline(&device, &descriptor_set_layouts, render_pass);
-        let (vertex_buffer, vertex_buffer_allocation, vertex_count) =
-            load_model_and_create_vertex_buffer(&device, &allocator, command_pool, queue);
-        let command_buffers = create_command_buffers(&device, command_pool, swapchain_images.len());
-        let (in_flight_fences, image_available_semaphores, render_finished_semaphores) =
-            create_sync_objects(&device, swapchain_images.len());
-
-        Self {
-            width,
-            height,
-            physical_device,
-            device,
-            surface_loader,
-            swapchain_loader,
-            allocator: ManuallyDrop::new(allocator),
-            surface,
-            queue,
-            swapchain,
-            surface_format,
-            surface_extent,
-            swapchain_images,
-            uniform_buffers,
-            uniform_buffer_allocations,
-            descriptor_pool,
-            descriptor_set_layouts,
-            descriptor_sets,
-            render_pass,
-            framebuffers,
-            depth_images_and_allocations,
-            color_image_views,
-            depth_image_views,
-            pipeline,
-            pipeline_layout,
-            vertex_buffer,
-            vertex_buffer_allocation: Some(vertex_buffer_allocation),
-            vertex_count,
-            command_buffers,
-            in_flight_fences,
-            image_available_semaphores,
-            render_finished_semaphores,
-            current_frame: 0,
-            dirty_swapchain: true,
-        }
-    }
-
     fn render(&mut self, width: u32, height: u32, mut egui_cmd: EguiCommand, rotate_y: f32) {
         if width == 0 || height == 0 {
             return;
@@ -316,15 +269,21 @@ impl RendererInner {
             self.recreate_swapchain(width, height, &mut egui_cmd);
         }
 
-        // Wait for the resources of this frame index to be completed on the GPU before requesting the next image.
+        // Wait for the previous use of this frame's resources to complete.
         unsafe {
-            self.device.wait_for_fences(
-                std::slice::from_ref(&self.in_flight_fences[self.current_frame]),
-                true,
-                u64::MAX,
-            )
+            self.device
+                .wait_for_fences(
+                    std::slice::from_ref(&self.in_flight_fences[self.current_frame]),
+                    true,
+                    u64::MAX,
+                )
+                .expect("Failed to wait for fence");
+            self.device
+                .reset_fences(std::slice::from_ref(
+                    &self.in_flight_fences[self.current_frame],
+                ))
+                .expect("Failed to reset fence");
         }
-        .expect("Failed to wait for fences");
 
         let result = unsafe {
             self.swapchain_loader.acquire_next_image(
@@ -343,13 +302,7 @@ impl RendererInner {
             Err(_) => return,
         };
 
-        unsafe {
-            self.device.reset_fences(std::slice::from_ref(
-                &self.in_flight_fences[self.current_frame],
-            ))
-        }
-        .expect("Failed to reset fences");
-
+        // Upload MVP uniform buffer.
         let ubo = UniformBufferObject {
             model: Mat4::from_rotation_y(rotate_y.to_radians()).to_cols_array(),
             view: Mat4::look_at_rh(
@@ -374,18 +327,18 @@ impl RendererInner {
             ptr.copy_from_nonoverlapping([ubo].as_ptr(), 1);
         }
 
-        let command_buffer_begin_info = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let cb = self.command_buffers[self.current_frame];
         unsafe {
             self.device
                 .begin_command_buffer(
-                    self.command_buffers[self.current_frame],
-                    &command_buffer_begin_info,
+                    cb,
+                    &vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                 )
                 .expect("Failed to begin command buffer");
 
             self.device.cmd_begin_render_pass(
-                self.command_buffers[self.current_frame],
+                cb,
                 &vk::RenderPassBeginInfo::default()
                     .render_pass(self.render_pass)
                     .framebuffer(self.framebuffers[index])
@@ -405,79 +358,59 @@ impl RendererInner {
                     ]),
                 vk::SubpassContents::INLINE,
             );
-            self.device.cmd_bind_pipeline(
-                self.command_buffers[self.current_frame],
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline,
-            );
+            self.device
+                .cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
             self.device.cmd_set_viewport(
-                self.command_buffers[self.current_frame],
+                cb,
                 0,
-                std::slice::from_ref(
-                    &vk::Viewport::default()
-                        .width(width as f32)
-                        .height(height as f32)
-                        .min_depth(0.0)
-                        .max_depth(1.0),
-                ),
+                &[vk::Viewport::default()
+                    .width(width as f32)
+                    .height(height as f32)
+                    .min_depth(0.0)
+                    .max_depth(1.0)],
             );
             self.device.cmd_set_scissor(
-                self.command_buffers[self.current_frame],
+                cb,
                 0,
-                std::slice::from_ref(&vk::Rect2D::default().extent(self.surface_extent)),
+                &[vk::Rect2D::default().extent(self.surface_extent)],
             );
             self.device.cmd_bind_descriptor_sets(
-                self.command_buffers[self.current_frame],
+                cb,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline_layout,
                 0,
                 &[self.descriptor_sets[self.current_frame]],
                 &[],
             );
+            self.device
+                .cmd_bind_vertex_buffers(cb, 0, &[self.vertex_buffer], &[0]);
+            self.device.cmd_draw(cb, self.vertex_count, 1, 0, 0);
 
-            self.device.cmd_bind_vertex_buffers(
-                self.command_buffers[self.current_frame],
-                0,
-                &[self.vertex_buffer],
-                &[0],
-            );
-            self.device.cmd_draw(
-                self.command_buffers[self.current_frame],
-                self.vertex_count,
-                1,
-                0,
-                0,
-            );
+            self.device.cmd_end_render_pass(cb);
+            egui_cmd.record(cb, index);
 
             self.device
-                .cmd_end_render_pass(self.command_buffers[self.current_frame]);
-
-            egui_cmd.record(self.command_buffers[self.current_frame], index);
-
-            self.device
-                .end_command_buffer(self.command_buffers[self.current_frame])
+                .end_command_buffer(cb)
                 .expect("Failed to end command buffer");
         }
 
-        let buffers_to_submit = [self.command_buffers[self.current_frame]];
-        let submit_info = vk::SubmitInfo::default()
-            .command_buffers(&buffers_to_submit)
-            .wait_semaphores(std::slice::from_ref(
-                &self.image_available_semaphores[self.current_frame],
-            ))
-            .wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
-            .signal_semaphores(std::slice::from_ref(
-                &self.render_finished_semaphores[self.current_frame],
-            ));
         unsafe {
             self.device
                 .queue_submit(
                     self.queue,
-                    std::slice::from_ref(&submit_info),
+                    &[vk::SubmitInfo::default()
+                        .command_buffers(&[cb])
+                        .wait_semaphores(std::slice::from_ref(
+                            &self.image_available_semaphores[self.current_frame],
+                        ))
+                        .wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
+                        .signal_semaphores(std::slice::from_ref(
+                            &self.render_finished_semaphores[self.current_frame],
+                        ))],
                     self.in_flight_fences[self.current_frame],
                 )
                 .expect("Failed to submit queue");
-        };
+        }
 
         let image_indices = [index as u32];
         let present_info = vk::PresentInfoKHR::default()
@@ -490,16 +423,17 @@ impl RendererInner {
             self.swapchain_loader
                 .queue_present(self.queue, &present_info)
         };
-        let is_dirty_swapchain = match result {
+        self.dirty_swapchain = match result {
             Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => true,
-            Err(error) => panic!("Failed to present queue. Cause: {}", error),
+            Err(e) => panic!("Failed to present queue: {e}"),
             _ => false,
         };
-        self.dirty_swapchain = is_dirty_swapchain;
 
         self.current_frame = (self.current_frame + 1) % self.in_flight_fences.len();
     }
 
+    /// Destroy all GPU resources.  Must be called before the Vulkan device is
+    /// destroyed; `Drop` alone is **not** sufficient.
     fn destroy(&mut self) {
         unsafe {
             self.device
@@ -510,49 +444,43 @@ impl RendererInner {
             for fence in self.in_flight_fences.drain(..) {
                 self.device.destroy_fence(fence, None);
             }
-            for semaphore in self.image_available_semaphores.drain(..) {
-                self.device.destroy_semaphore(semaphore, None);
+            for sem in self.image_available_semaphores.drain(..) {
+                self.device.destroy_semaphore(sem, None);
             }
-            for semaphore in self.render_finished_semaphores.drain(..) {
-                self.device.destroy_semaphore(semaphore, None);
+            for sem in self.render_finished_semaphores.drain(..) {
+                self.device.destroy_semaphore(sem, None);
             }
             self.device.destroy_buffer(self.vertex_buffer, None);
-            if let Some(vertex_buffer_allocation) = self.vertex_buffer_allocation.take() {
-                allocator
-                    .free(vertex_buffer_allocation)
-                    .expect("Failed to free memory");
+            if let Some(alloc) = self.vertex_buffer_allocation.take() {
+                allocator.free(alloc).expect("Failed to free memory");
             }
             self.device.destroy_pipeline(self.pipeline, None);
-            self.device
-                .destroy_pipeline_layout(self.pipeline_layout, None);
-            for &framebuffer in self.framebuffers.iter() {
-                self.device.destroy_framebuffer(framebuffer, None);
+            self.device.destroy_pipeline_layout(self.pipeline_layout, None);
+            for &fb in &self.framebuffers {
+                self.device.destroy_framebuffer(fb, None);
             }
-            for &color_image_view in self.color_image_views.iter() {
-                self.device.destroy_image_view(color_image_view, None);
+            for &view in &self.color_image_views {
+                self.device.destroy_image_view(view, None);
             }
-            for &depth_image_view in self.depth_image_views.iter() {
-                self.device.destroy_image_view(depth_image_view, None);
+            for &view in &self.depth_image_views {
+                self.device.destroy_image_view(view, None);
             }
-            for (depth_image, allocation) in self.depth_images_and_allocations.drain(..) {
-                self.device.destroy_image(depth_image, None);
-                allocator.free(allocation).expect("Failed to free memory");
+            for (img, alloc) in self.depth_images_and_allocations.drain(..) {
+                self.device.destroy_image(img, None);
+                allocator.free(alloc).expect("Failed to free memory");
             }
             self.device.destroy_render_pass(self.render_pass, None);
-            for &descriptor_set_layout in self.descriptor_set_layouts.iter() {
-                self.device
-                    .destroy_descriptor_set_layout(descriptor_set_layout, None);
+            for &layout in &self.descriptor_set_layouts {
+                self.device.destroy_descriptor_set_layout(layout, None);
             }
-            self.device
-                .destroy_descriptor_pool(self.descriptor_pool, None);
-            for &uniform_buffer in self.uniform_buffers.iter() {
-                self.device.destroy_buffer(uniform_buffer, None);
+            self.device.destroy_descriptor_pool(self.descriptor_pool, None);
+            for &buf in &self.uniform_buffers {
+                self.device.destroy_buffer(buf, None);
             }
-            for allocation in self.uniform_buffer_allocations.drain(..) {
-                allocator.free(allocation).expect("Failed to free memory");
+            for alloc in self.uniform_buffer_allocations.drain(..) {
+                allocator.free(alloc).expect("Failed to free memory");
             }
-            self.swapchain_loader
-                .destroy_swapchain(self.swapchain, None);
+            self.swapchain_loader.destroy_swapchain(self.swapchain, None);
         }
         unsafe {
             ManuallyDrop::drop(&mut self.allocator);
@@ -560,16 +488,16 @@ impl RendererInner {
     }
 }
 
-#[derive(Clone)]
-pub struct Renderer {
-    inner: Arc<Mutex<RendererInner>>,
-}
+// ── Public API ────────────────────────────────────────────────────────────────
 
-pub struct RendererInnerCreationInfo {
+/// Parameters for constructing a [`ModelRenderer`].
+pub struct ModelRendererCreationInfo {
     pub physical_device: vk::PhysicalDevice,
-    pub device: Device,
-    pub surface_loader: ash::khr::surface::Instance,
-    pub swapchain_loader: ash::khr::swapchain::Device,
+    /// The logical device.  Wrapped in `Arc` so it can be shared with the
+    /// application (e.g. for cleanup in `Drop`).
+    pub device: Arc<Device>,
+    pub surface_loader: Arc<ash::khr::surface::Instance>,
+    pub swapchain_loader: Arc<ash::khr::swapchain::Device>,
     pub allocator: Arc<Mutex<Allocator>>,
     pub surface: vk::SurfaceKHR,
     pub queue_family_index: u32,
@@ -579,20 +507,32 @@ pub struct RendererInnerCreationInfo {
     pub height: u32,
 }
 
-impl Renderer {
-    pub fn new(create_info: RendererInnerCreationInfo) -> Self {
+/// A swapchain-based renderer that draws the Suzanne model and composites egui
+/// on top.
+///
+/// Cheaply clonable — inner state is reference-counted.
+#[derive(Clone)]
+pub struct ModelRenderer {
+    inner: Arc<Mutex<ModelRendererInner>>,
+}
+
+impl ModelRenderer {
+    pub fn new(info: ModelRendererCreationInfo) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(RendererInner::new(create_info))),
+            inner: Arc::new(Mutex::new(ModelRendererInner::new(info))),
         }
     }
 
-    pub fn render(&self, width: u32, height: u32, egu_cmd: EguiCommand, rotate_y: f32) {
+    /// Render one frame.  `rotate_y` is the model's Y-axis rotation in degrees.
+    pub fn render(&self, width: u32, height: u32, egui_cmd: EguiCommand, rotate_y: f32) {
         self.inner
             .lock()
             .unwrap()
-            .render(width, height, egu_cmd, rotate_y);
+            .render(width, height, egui_cmd, rotate_y);
     }
 
+    /// Destroy all GPU resources.  Must be called before the Vulkan device is
+    /// destroyed.
     pub fn destroy(&mut self) {
         self.inner.lock().unwrap().destroy();
     }

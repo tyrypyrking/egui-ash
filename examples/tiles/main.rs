@@ -13,7 +13,7 @@ use tree_behavior::TreeBehavior;
 mod common;
 use common::pane::Pane;
 use common::scene::Scene;
-use common::scene_view_full::SceneView;
+use common::scene_view::SceneView;
 use common::vkutils::*;
 
 struct MyApp {

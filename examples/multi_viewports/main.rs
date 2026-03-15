@@ -14,7 +14,7 @@ mod triangle_renderer;
 #[path = "../common/mod.rs"]
 mod common;
 
-use common::model_renderer_shared::{RendererShared, RendererSharedCreationInfo};
+use common::model_renderer::{ModelRenderer, ModelRendererCreationInfo};
 use common::vkutils::*;
 use triangle_renderer::TriangleRenderer;
 
@@ -37,7 +37,7 @@ struct MyApp {
     allocator: ManuallyDrop<Arc<Mutex<Allocator>>>,
 
     triangle_renderer: TriangleRenderer,
-    model_renderer: Option<RendererShared>,
+    model_renderer: Option<ModelRenderer>,
 
     theme: Theme,
     text: String,
@@ -195,7 +195,7 @@ impl App for MyApp {
                 }
                 let surface = create_surface(&self.entry, &self.instance, window);
                 self.model_surface = Some(surface);
-                let renderer_creation_info = RendererSharedCreationInfo {
+                let renderer_creation_info = ModelRendererCreationInfo {
                     physical_device: self.physical_device,
                     surface,
                     queue_family_index: self.queue_family_index,
@@ -204,11 +204,11 @@ impl App for MyApp {
                     device: self.device.clone(),
                     surface_loader: self.surface_loader.clone(),
                     swapchain_loader: self.swapchain_loader.clone(),
-                    allocator: self.allocator.clone(),
+                    allocator: (*self.allocator).clone(),
                     width: window.inner_size().width,
                     height: window.inner_size().height,
                 };
-                self.model_renderer = Some(RendererShared::new(renderer_creation_info));
+                self.model_renderer = Some(ModelRenderer::new(renderer_creation_info));
             }
             _ => (),
         }

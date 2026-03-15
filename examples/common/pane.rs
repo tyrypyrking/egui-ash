@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::common::scene::Scene;
-use crate::common::scene_view_full::SceneView;
+use crate::common::scene_view::SceneView;
 
 pub enum Pane {
     Hello,
