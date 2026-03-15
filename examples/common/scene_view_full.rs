@@ -2,73 +2,19 @@ use ash::{vk, Device};
 use glam::{Mat4, Vec3};
 use gpu_allocator::vulkan::{Allocation, Allocator};
 use std::{
-    ffi::CString,
     mem::ManuallyDrop,
     sync::{Arc, Mutex},
 };
 
-use crate::{scene::Scene, common::vkutils};
-
-macro_rules! include_spirv {
-    ($file:literal) => {{
-        let bytes = include_bytes!($file);
-        bytes
-            .chunks_exact(4)
-            .map(|x| x.try_into().unwrap())
-            .map(match bytes[0] {
-                0x03 => u32::from_le_bytes,
-                0x07 => u32::from_be_bytes,
-                _ => panic!("Unknown endianness"),
-            })
-            .collect::<Vec<u32>>()
-    }};
-}
-
-#[repr(C)]
-#[derive(Debug, Clone)]
-struct Vertex {
-    position: Vec3,
-    normal: Vec3,
-}
-impl Vertex {
-    fn get_binding_descriptions() -> [vk::VertexInputBindingDescription; 1] {
-        [vk::VertexInputBindingDescription::default()
-            .binding(0)
-            .stride(std::mem::size_of::<Self>() as u32)
-            .input_rate(vk::VertexInputRate::VERTEX)]
-    }
-
-    fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
-        [
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(0)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(0),
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(1)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(4 * 3),
-        ]
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone)]
-struct UniformBufferObject {
-    model: [f32; 16],
-    view: [f32; 16],
-    proj: [f32; 16],
-    diffuse_color: [f32; 3],
-    _padding0: f32,
-    specular_color: [f32; 3],
-    shininess: f32,
-    light_position: [f32; 3],
-    light_intensity: f32,
-    light_color: [f32; 3],
-    _padding1: f32,
-}
+use crate::common::{
+    render::{
+        create_command_buffers, create_descriptor_pool, create_descriptor_set_layouts,
+        create_descriptor_sets, create_graphics_pipeline, create_uniform_buffers,
+        load_model_and_create_vertex_buffer,
+    },
+    scene::Scene,
+    vkutils,
+};
 
 struct SceneViewInner {
     width: u32,
@@ -109,119 +55,9 @@ struct SceneViewInner {
 
     scene: Arc<Mutex<Scene>>,
 }
+
 impl SceneViewInner {
     const IN_FLIGHT_FRAMES: usize = 2;
-
-    fn create_uniform_buffers(
-        device: &Device,
-        allocator: &Mutex<Allocator>,
-    ) -> (Vec<vk::Buffer>, Vec<Allocation>) {
-        let buffer_size = std::mem::size_of::<UniformBufferObject>() as u64;
-        let buffer_usage = vk::BufferUsageFlags::UNIFORM_BUFFER;
-        let buffer_create_info = vk::BufferCreateInfo::default()
-            .size(buffer_size)
-            .usage(buffer_usage)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-        let buffers = (0..Self::IN_FLIGHT_FRAMES)
-            .map(|_| unsafe {
-                device
-                    .create_buffer(&buffer_create_info, None)
-                    .expect("Failed to create buffer")
-            })
-            .collect::<Vec<_>>();
-        let buffer_memory_requirements =
-            unsafe { device.get_buffer_memory_requirements(buffers[0]) };
-        let buffer_alloc_info = gpu_allocator::vulkan::AllocationCreateDesc {
-            name: "Uniform Buffer",
-            requirements: buffer_memory_requirements,
-            location: gpu_allocator::MemoryLocation::CpuToGpu,
-            linear: true,
-            allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-        };
-        let buffer_allocations = buffers
-            .iter()
-            .map(|_| {
-                allocator
-                    .lock()
-                    .unwrap()
-                    .allocate(&buffer_alloc_info)
-                    .expect("Failed to allocate memory")
-            })
-            .collect::<Vec<_>>();
-        for (&buffer, buffer_memory) in buffers.iter().zip(buffer_allocations.iter()) {
-            unsafe {
-                device
-                    .bind_buffer_memory(buffer, buffer_memory.memory(), buffer_memory.offset())
-                    .expect("Failed to bind buffer memory")
-            }
-        }
-
-        (buffers, buffer_allocations)
-    }
-
-    fn create_descriptor_pool(device: &Device) -> vk::DescriptorPool {
-        let pool_size = vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(Self::IN_FLIGHT_FRAMES as u32);
-        let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
-            .pool_sizes(std::slice::from_ref(&pool_size))
-            .max_sets(Self::IN_FLIGHT_FRAMES as u32);
-        unsafe {
-            device
-                .create_descriptor_pool(&descriptor_pool_create_info, None)
-                .expect("Failed to create descriptor pool")
-        }
-    }
-
-    fn create_descriptor_set_layouts(device: &Device) -> Vec<vk::DescriptorSetLayout> {
-        let ubo_layout_binding = vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT);
-        let ubo_layout_create_info = vk::DescriptorSetLayoutCreateInfo::default()
-            .bindings(std::slice::from_ref(&ubo_layout_binding));
-
-        (0..Self::IN_FLIGHT_FRAMES)
-            .map(|_| unsafe {
-                device
-                    .create_descriptor_set_layout(&ubo_layout_create_info, None)
-                    .expect("Failed to create descriptor set layout")
-            })
-            .collect()
-    }
-
-    fn create_descriptor_sets(
-        device: &Device,
-        descriptor_pool: vk::DescriptorPool,
-        descriptor_set_layouts: &[vk::DescriptorSetLayout],
-        uniform_buffers: &[vk::Buffer],
-    ) -> Vec<vk::DescriptorSet> {
-        let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(descriptor_pool)
-            .set_layouts(descriptor_set_layouts);
-        let descriptor_sets = unsafe {
-            device
-                .allocate_descriptor_sets(&descriptor_set_allocate_info)
-                .expect("Failed to allocate descriptor sets")
-        };
-        for index in 0..descriptor_sets.len() {
-            let buffer_info = vk::DescriptorBufferInfo::default()
-                .buffer(uniform_buffers[index])
-                .offset(0)
-                .range(vk::WHOLE_SIZE);
-            let descriptor_write = vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_sets[index])
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(std::slice::from_ref(&buffer_info));
-            unsafe {
-                device.update_descriptor_sets(std::slice::from_ref(&descriptor_write), &[]);
-            }
-        }
-
-        descriptor_sets
-    }
 
     fn create_render_pass(device: &Device) -> vk::RenderPass {
         let attachments = [
@@ -512,309 +348,6 @@ impl SceneViewInner {
         .expect("Failed to create sampler")
     }
 
-    fn create_graphics_pipeline(
-        device: &Device,
-        descriptor_set_layouts: &[vk::DescriptorSetLayout],
-        render_pass: vk::RenderPass,
-    ) -> (vk::Pipeline, vk::PipelineLayout) {
-        let vertex_shader_module = {
-            let spirv = include_spirv!("../common/shaders/spv/model.vert.spv");
-            let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&spirv);
-            unsafe {
-                device
-                    .create_shader_module(&shader_module_create_info, None)
-                    .expect("Failed to create shader module")
-            }
-        };
-        let fragment_shader_module = {
-            let spirv = include_spirv!("../common/shaders/spv/model.frag.spv");
-            let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&spirv);
-            unsafe {
-                device
-                    .create_shader_module(&shader_module_create_info, None)
-                    .expect("Failed to create shader module")
-            }
-        };
-        let main_function_name = CString::new("main").unwrap();
-        let pipeline_shader_stages = [
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::VERTEX)
-                .module(vertex_shader_module)
-                .name(&main_function_name),
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::FRAGMENT)
-                .module(fragment_shader_module)
-                .name(&main_function_name),
-        ];
-        let pipeline_layout = unsafe {
-            device
-                .create_pipeline_layout(
-                    &vk::PipelineLayoutCreateInfo::default().set_layouts(descriptor_set_layouts),
-                    None,
-                )
-                .expect("Failed to create pipeline layout")
-        };
-        let vertex_input_binding = Vertex::get_binding_descriptions();
-        let vertex_input_attribute = Vertex::get_attribute_descriptions();
-        let input_assembly_info = vk::PipelineInputAssemblyStateCreateInfo::default()
-            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-        let viewport_info = vk::PipelineViewportStateCreateInfo::default()
-            .viewport_count(1)
-            .scissor_count(1);
-        let rasterization_info = vk::PipelineRasterizationStateCreateInfo::default()
-            .depth_clamp_enable(false)
-            .rasterizer_discard_enable(false)
-            .polygon_mode(vk::PolygonMode::FILL)
-            .cull_mode(vk::CullModeFlags::NONE)
-            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-            .depth_bias_enable(false)
-            .line_width(1.0);
-        let stencil_op = vk::StencilOpState::default()
-            .fail_op(vk::StencilOp::KEEP)
-            .pass_op(vk::StencilOp::KEEP)
-            .compare_op(vk::CompareOp::ALWAYS);
-        let depth_stencil_info = vk::PipelineDepthStencilStateCreateInfo::default()
-            .depth_test_enable(true)
-            .depth_write_enable(true)
-            .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
-            .depth_bounds_test_enable(false)
-            .stencil_test_enable(false)
-            .front(stencil_op)
-            .back(stencil_op);
-        let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
-            .color_write_mask(
-                vk::ColorComponentFlags::R
-                    | vk::ColorComponentFlags::G
-                    | vk::ColorComponentFlags::B
-                    | vk::ColorComponentFlags::A,
-            );
-        let color_blend_info = vk::PipelineColorBlendStateCreateInfo::default()
-            .attachments(std::slice::from_ref(&color_blend_attachment));
-        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let dynamic_state_info =
-            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
-        let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default()
-            .vertex_attribute_descriptions(&vertex_input_attribute)
-            .vertex_binding_descriptions(&vertex_input_binding);
-        let multisample_info = vk::PipelineMultisampleStateCreateInfo::default()
-            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-        let pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
-            .stages(&pipeline_shader_stages)
-            .vertex_input_state(&vertex_input_state)
-            .input_assembly_state(&input_assembly_info)
-            .viewport_state(&viewport_info)
-            .rasterization_state(&rasterization_info)
-            .multisample_state(&multisample_info)
-            .depth_stencil_state(&depth_stencil_info)
-            .color_blend_state(&color_blend_info)
-            .dynamic_state(&dynamic_state_info)
-            .layout(pipeline_layout)
-            .render_pass(render_pass)
-            .subpass(0);
-        let graphics_pipeline = unsafe {
-            device
-                .create_graphics_pipelines(
-                    vk::PipelineCache::null(),
-                    std::slice::from_ref(&pipeline_create_info),
-                    None,
-                )
-                .unwrap()[0]
-        };
-        unsafe {
-            device.destroy_shader_module(vertex_shader_module, None);
-            device.destroy_shader_module(fragment_shader_module, None);
-        }
-
-        (graphics_pipeline, pipeline_layout)
-    }
-
-    fn load_model_and_create_vertex_buffer(
-        device: &Device,
-        allocator: &Mutex<Allocator>,
-        command_pool: vk::CommandPool,
-        queue: vk::Queue,
-    ) -> (vk::Buffer, Allocation, u32) {
-        let mut allocator = allocator.lock().unwrap();
-        let vertices = {
-            let model_obj = tobj::load_obj(
-                "./examples/common/assets/suzanne.obj",
-                &tobj::LoadOptions {
-                    single_index: true,
-                    triangulate: true,
-                    ignore_points: true,
-                    ignore_lines: true,
-                },
-            )
-            .expect("Failed to load model");
-            let mut vertices = vec![];
-            let (models, _) = model_obj;
-            for m in models.iter() {
-                let mesh = &m.mesh;
-
-                for &i in mesh.indices.iter() {
-                    let i = i as usize;
-                    let vertex = Vertex {
-                        position: Vec3::new(
-                            mesh.positions[3 * i],
-                            mesh.positions[3 * i + 1],
-                            mesh.positions[3 * i + 2],
-                        ),
-                        normal: Vec3::new(
-                            mesh.normals[3 * i],
-                            mesh.normals[3 * i + 1],
-                            mesh.normals[3 * i + 2],
-                        ),
-                    };
-                    vertices.push(vertex);
-                }
-            }
-
-            vertices
-        };
-        let vertex_buffer_size = vertices.len() as u64 * std::mem::size_of::<Vertex>() as u64;
-        let temporary_buffer = unsafe {
-            device
-                .create_buffer(
-                    &vk::BufferCreateInfo::default()
-                        .size(vertex_buffer_size)
-                        .usage(vk::BufferUsageFlags::TRANSFER_SRC),
-                    None,
-                )
-                .expect("Failed to create buffer")
-        };
-        let temporary_buffer_memory_requirements =
-            unsafe { device.get_buffer_memory_requirements(temporary_buffer) };
-        let temporary_buffer_allocation = allocator
-            .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-                name: "Temporary Vertex Buffer",
-                requirements: temporary_buffer_memory_requirements,
-                location: gpu_allocator::MemoryLocation::CpuToGpu,
-                linear: true,
-                allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-            })
-            .expect("Failed to allocate memory");
-        unsafe {
-            device
-                .bind_buffer_memory(
-                    temporary_buffer,
-                    temporary_buffer_allocation.memory(),
-                    temporary_buffer_allocation.offset(),
-                )
-                .expect("Failed to bind buffer memory")
-        }
-        unsafe {
-            let ptr = temporary_buffer_allocation.mapped_ptr().unwrap().as_ptr() as *mut Vertex;
-            ptr.copy_from_nonoverlapping(vertices.as_ptr(), vertices.len());
-        }
-
-        let vertex_buffer = unsafe {
-            device
-                .create_buffer(
-                    &vk::BufferCreateInfo::default()
-                        .size(vertex_buffer_size)
-                        .usage(
-                            vk::BufferUsageFlags::TRANSFER_DST
-                                | vk::BufferUsageFlags::VERTEX_BUFFER,
-                        ),
-                    None,
-                )
-                .expect("Failed to create buffer")
-        };
-        let vertex_buffer_memory_requirements =
-            unsafe { device.get_buffer_memory_requirements(vertex_buffer) };
-        let vertex_buffer_allocation = allocator
-            .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-                name: "Vertex Buffer",
-                requirements: vertex_buffer_memory_requirements,
-                location: gpu_allocator::MemoryLocation::GpuOnly,
-                linear: true,
-                allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-            })
-            .expect("Failed to allocate memory");
-        unsafe {
-            device
-                .bind_buffer_memory(
-                    vertex_buffer,
-                    vertex_buffer_allocation.memory(),
-                    vertex_buffer_allocation.offset(),
-                )
-                .expect("Failed to bind buffer memory")
-        }
-
-        let cmd = unsafe {
-            device
-                .allocate_command_buffers(
-                    &vk::CommandBufferAllocateInfo::default()
-                        .command_pool(command_pool)
-                        .level(vk::CommandBufferLevel::PRIMARY)
-                        .command_buffer_count(1),
-                )
-                .expect("Failed to allocate command buffer")[0]
-        };
-
-        unsafe {
-            device
-                .begin_command_buffer(
-                    cmd,
-                    &vk::CommandBufferBeginInfo::default()
-                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-                )
-                .expect("Failed to begin command buffer");
-            device.cmd_copy_buffer(
-                cmd,
-                temporary_buffer,
-                vertex_buffer,
-                &[vk::BufferCopy::default()
-                    .src_offset(0)
-                    .dst_offset(0)
-                    .size(vertex_buffer_size)],
-            );
-            device
-                .end_command_buffer(cmd)
-                .expect("Failed to end command buffer");
-
-            device
-                .queue_submit(
-                    queue,
-                    &[vk::SubmitInfo::default().command_buffers(&[cmd])],
-                    vk::Fence::null(),
-                )
-                .expect("Failed to submit queue");
-            device.queue_wait_idle(queue).expect("Failed to wait queue");
-
-            device.free_command_buffers(command_pool, &[cmd]);
-        }
-
-        allocator
-            .free(temporary_buffer_allocation)
-            .expect("Failed to free memory");
-        unsafe {
-            device.destroy_buffer(temporary_buffer, None);
-        }
-
-        (
-            vertex_buffer,
-            vertex_buffer_allocation,
-            vertices.len() as u32,
-        )
-    }
-
-    fn create_command_buffers(
-        device: &Device,
-        command_pool: vk::CommandPool,
-    ) -> Vec<vk::CommandBuffer> {
-        unsafe {
-            device
-                .allocate_command_buffers(
-                    &vk::CommandBufferAllocateInfo::default()
-                        .command_pool(command_pool)
-                        .level(vk::CommandBufferLevel::PRIMARY)
-                        .command_buffer_count(Self::IN_FLIGHT_FRAMES as u32),
-                )
-                .expect("Failed to allocate command buffers")
-        }
-    }
-
     fn create_sync_objects(device: &Device) -> Vec<vk::Fence> {
         let fence_create_info =
             vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
@@ -914,11 +447,15 @@ impl SceneViewInner {
         let width = 1;
         let height = 1;
 
-        let (uniform_buffers, uniform_buffer_allocations) =
-            Self::create_uniform_buffers(&device, &allocator);
-        let descriptor_pool = Self::create_descriptor_pool(&device);
-        let descriptor_set_layouts = Self::create_descriptor_set_layouts(&device);
-        let descriptor_sets = Self::create_descriptor_sets(
+        let (uniform_buffers, uniform_buffer_allocations) = create_uniform_buffers(
+            &device,
+            &allocator,
+            Self::IN_FLIGHT_FRAMES,
+            std::mem::size_of::<UniformBufferObject>() as u64,
+        );
+        let descriptor_pool = create_descriptor_pool(&device, Self::IN_FLIGHT_FRAMES);
+        let descriptor_set_layouts = create_descriptor_set_layouts(&device, Self::IN_FLIGHT_FRAMES);
+        let descriptor_sets = create_descriptor_sets(
             &device,
             descriptor_pool,
             &descriptor_set_layouts,
@@ -945,10 +482,10 @@ impl SceneViewInner {
         );
         let sampler = Self::create_sampler(&device);
         let (pipeline, pipeline_layout) =
-            Self::create_graphics_pipeline(&device, &descriptor_set_layouts, render_pass);
+            create_graphics_pipeline(&device, &descriptor_set_layouts, render_pass);
         let (vertex_buffer, vertex_buffer_allocation, vertex_count) =
-            Self::load_model_and_create_vertex_buffer(&device, &allocator, command_pool, queue);
-        let command_buffers = Self::create_command_buffers(&device, command_pool);
+            load_model_and_create_vertex_buffer(&device, &allocator, command_pool, queue);
+        let command_buffers = create_command_buffers(&device, command_pool, Self::IN_FLIGHT_FRAMES);
         let in_flight_fences = Self::create_sync_objects(&device);
 
         let mut texture_ids = vec![];
@@ -1302,6 +839,7 @@ impl SceneViewInner {
             ManuallyDrop::drop(&mut self.allocator);
         }
     }
+
 }
 
 #[derive(Clone)]
@@ -1395,3 +933,20 @@ impl egui::Widget for &mut SceneView {
         response
     }
 }
+
+#[repr(C)]
+#[derive(Debug, Clone)]
+struct UniformBufferObject {
+    model: [f32; 16],
+    view: [f32; 16],
+    proj: [f32; 16],
+    diffuse_color: [f32; 3],
+    _padding0: f32,
+    specular_color: [f32; 3],
+    shininess: f32,
+    light_position: [f32; 3],
+    light_intensity: f32,
+    light_color: [f32; 3],
+    _padding1: f32,
+}
+

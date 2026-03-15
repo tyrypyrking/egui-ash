@@ -9,15 +9,14 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-mod model_renderer;
 mod triangle_renderer;
 
 #[path = "../common/mod.rs"]
 mod common;
 
-use model_renderer::ModelRenderer;
-use triangle_renderer::TriangleRenderer;
+use common::model_renderer_shared::RendererShared;
 use common::vkutils::*;
+use triangle_renderer::TriangleRenderer;
 
 use crate::model_renderer::RendererCreationInfo;
 
@@ -40,7 +39,7 @@ struct MyApp {
     allocator: ManuallyDrop<Arc<Mutex<Allocator>>>,
 
     triangle_renderer: TriangleRenderer,
-    model_renderer: Option<ModelRenderer>,
+    model_renderer: Option<RendererShared>,
 
     theme: Theme,
     text: String,
