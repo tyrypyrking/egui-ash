@@ -205,19 +205,21 @@ impl SharedRendererInner {
         self.dirty_swapchain = false;
     }
 
-    fn new(
-        physical_device: vk::PhysicalDevice,
-        device: Arc<Device>,
-        surface_loader: Arc<ash::khr::surface::Instance>,
-        swapchain_loader: Arc<ash::khr::swapchain::Device>,
-        allocator: ManuallyDrop<Arc<Mutex<Allocator>>>,
-        surface: vk::SurfaceKHR,
-        queue_family_index: u32,
-        queue: vk::Queue,
-        command_pool: vk::CommandPool,
-        width: u32,
-        height: u32,
-    ) -> Self {
+    fn new(create_info: RendererSharedCreationInfo) -> Self {
+        let RendererSharedCreationInfo {
+            physical_device,
+            device,
+            surface_loader,
+            swapchain_loader,
+            allocator,
+            surface,
+            queue_family_index,
+            queue,
+            command_pool,
+            width,
+            height,
+        } = create_info;
+
         let (swapchain, surface_format, surface_extent, swapchain_images) = create_swapchain(
             physical_device,
             &surface_loader,
@@ -565,34 +567,25 @@ impl SharedRendererInner {
 pub struct RendererShared {
     inner: Arc<Mutex<SharedRendererInner>>,
 }
+
+pub struct RendererSharedCreationInfo {
+    pub physical_device: vk::PhysicalDevice,
+    pub device: Arc<Device>,
+    pub surface_loader: Arc<ash::khr::surface::Instance>,
+    pub swapchain_loader: Arc<ash::khr::swapchain::Device>,
+    pub allocator: ManuallyDrop<Arc<Mutex<Allocator>>>,
+    pub surface: vk::SurfaceKHR,
+    pub queue_family_index: u32,
+    pub queue: vk::Queue,
+    pub command_pool: vk::CommandPool,
+    pub width: u32,
+    pub height: u32,
+}
+
 impl RendererShared {
-    pub fn new(
-        physical_device: vk::PhysicalDevice,
-        device: Arc<Device>,
-        surface_loader: Arc<ash::khr::surface::Instance>,
-        swapchain_loader: Arc<ash::khr::swapchain::Device>,
-        allocator: ManuallyDrop<Arc<Mutex<Allocator>>>,
-        surface: vk::SurfaceKHR,
-        queue_family_index: u32,
-        queue: vk::Queue,
-        command_pool: vk::CommandPool,
-        width: u32,
-        height: u32,
-    ) -> Self {
+    pub fn new(create_info: RendererSharedCreationInfo) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(SharedRendererInner::new(
-                physical_device,
-                device,
-                surface_loader,
-                swapchain_loader,
-                allocator,
-                surface,
-                queue_family_index,
-                queue,
-                command_pool,
-                width,
-                height,
-            ))),
+            inner: Arc::new(Mutex::new(SharedRendererInner::new(create_info))),
         }
     }
 

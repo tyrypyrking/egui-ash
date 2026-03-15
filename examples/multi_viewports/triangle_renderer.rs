@@ -808,7 +808,7 @@ impl TriangleRendererInner {
                     .expect("Failed to get swapchain images")
             };
 
-            (swapchain, swapchain_images, *surface_format, surface_extent)
+            (swapchain, swapchain_images, surface_format, surface_extent)
         };
         self.swapchain = swapchain;
         self.swapchain_images = swapchain_images;

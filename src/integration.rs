@@ -632,8 +632,6 @@ impl<A: Allocator + 'static> Integration<A> {
     }
 }
 
-type ViewportCallback = Option<Arc<dyn Fn(&egui::Context) + Send + Sync>>;
-
 #[allow(clippy::too_many_arguments)]
 fn initialize_or_update_viewport<'vp>(
     context: &egui::Context,
@@ -645,7 +643,7 @@ fn initialize_or_update_viewport<'vp>(
     ids: egui::ViewportIdPair,
     class: egui::ViewportClass,
     mut builder: egui::ViewportBuilder,
-    viewport_ui_cb: ViewportUiCallback,
+    viewport_ui_cb: Option<ViewportUiCallback>,
     window_initialized: &mut bool,
     theme: Option<winit::window::Theme>,
     #[cfg(feature = "persistence")] storage: &Storage,

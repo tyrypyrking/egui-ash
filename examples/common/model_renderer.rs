@@ -205,19 +205,21 @@ impl RendererInner {
         self.dirty_swapchain = false;
     }
 
-    fn new(
-        physical_device: vk::PhysicalDevice,
-        device: Device,
-        surface_loader: ash::khr::surface::Instance,
-        swapchain_loader: ash::khr::swapchain::Device,
-        allocator: Arc<Mutex<Allocator>>,
-        surface: vk::SurfaceKHR,
-        queue_family_index: u32,
-        queue: vk::Queue,
-        command_pool: vk::CommandPool,
-        width: u32,
-        height: u32,
-    ) -> Self {
+    fn new(create_info: RendererInnerCreationInfo) -> Self {
+        let RendererInnerCreationInfo {
+            physical_device,
+            device,
+            surface_loader,
+            swapchain_loader,
+            allocator,
+            surface,
+            queue_family_index,
+            queue,
+            command_pool,
+            width,
+            height,
+        } = create_info;
+
         let (swapchain, surface_format, surface_extent, swapchain_images) = create_swapchain(
             physical_device,
             &surface_loader,
@@ -562,34 +564,25 @@ impl RendererInner {
 pub struct Renderer {
     inner: Arc<Mutex<RendererInner>>,
 }
+
+pub struct RendererInnerCreationInfo {
+    pub physical_device: vk::PhysicalDevice,
+    pub device: Device,
+    pub surface_loader: ash::khr::surface::Instance,
+    pub swapchain_loader: ash::khr::swapchain::Device,
+    pub allocator: Arc<Mutex<Allocator>>,
+    pub surface: vk::SurfaceKHR,
+    pub queue_family_index: u32,
+    pub queue: vk::Queue,
+    pub command_pool: vk::CommandPool,
+    pub width: u32,
+    pub height: u32,
+}
+
 impl Renderer {
-    pub fn new(
-        physical_device: vk::PhysicalDevice,
-        device: Device,
-        surface_loader: ash::khr::surface::Instance,
-        swapchain_loader: ash::khr::swapchain::Device,
-        allocator: Arc<Mutex<Allocator>>,
-        surface: vk::SurfaceKHR,
-        queue_family_index: u32,
-        queue: vk::Queue,
-        command_pool: vk::CommandPool,
-        width: u32,
-        height: u32,
-    ) -> Self {
+    pub fn new(create_info: RendererInnerCreationInfo) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(RendererInner::new(
-                physical_device,
-                device,
-                surface_loader,
-                swapchain_loader,
-                allocator,
-                surface,
-                queue_family_index,
-                queue,
-                command_pool,
-                width,
-                height,
-            ))),
+            inner: Arc::new(Mutex::new(RendererInner::new(create_info))),
         }
     }
 

@@ -1,7 +1,6 @@
 use ash::{ext::debug_utils, vk, Device, Entry, Instance};
 use egui_ash::{
-    raw_window_handle::{HasDisplayHandle as _, HasWindowHandle as _},
-    App, AppCreator, AshRenderState, CreationContext, HandleRedraw, RunOption, Theme,
+    winit::window::Theme, App, AppCreator, AshRenderState, CreationContext, HandleRedraw, RunOption,
 };
 use gpu_allocator::vulkan::*;
 use std::{
@@ -14,9 +13,7 @@ mod common;
 use common::model_renderer;
 use common::vkutils::*;
 
-use model_renderer::Renderer;
-
-use crate::renderer::RendererInnerCreationInfo;
+use model_renderer::{Renderer, RendererInnerCreationInfo};
 
 struct MyApp {
     entry: Entry,

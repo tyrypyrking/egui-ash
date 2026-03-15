@@ -14,11 +14,9 @@ mod triangle_renderer;
 #[path = "../common/mod.rs"]
 mod common;
 
-use common::model_renderer_shared::RendererShared;
+use common::model_renderer_shared::{RendererShared, RendererSharedCreationInfo};
 use common::vkutils::*;
 use triangle_renderer::TriangleRenderer;
-
-use crate::model_renderer::RendererCreationInfo;
 
 struct MyApp {
     entry: Arc<Entry>,
@@ -197,7 +195,7 @@ impl App for MyApp {
                 }
                 let surface = create_surface(&self.entry, &self.instance, window);
                 self.model_surface = Some(surface);
-                let renderer_creation_info = RendererCreationInfo {
+                let renderer_creation_info = RendererSharedCreationInfo {
                     physical_device: self.physical_device,
                     surface,
                     queue_family_index: self.queue_family_index,
@@ -210,7 +208,7 @@ impl App for MyApp {
                     width: window.inner_size().width,
                     height: window.inner_size().height,
                 };
-                self.model_renderer = Some(ModelRenderer::new(renderer_creation_info));
+                self.model_renderer = Some(RendererShared::new(renderer_creation_info));
             }
             _ => (),
         }
