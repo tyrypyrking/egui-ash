@@ -124,7 +124,7 @@ where
     exit_signal: ExitSignal,
     creator: C,
     app: Option<C::App>,
-    integration: Option<ManuallyDrop<Integration<A>>>,
+    integration: Option<ManuallyDrop<Box<Integration<A>>>>,
     #[cfg(feature = "accesskit")]
     event_loop_proxy: winit::event_loop::EventLoopProxy<IntegrationEvent>,
 }
@@ -228,9 +228,11 @@ where
         };
         let (app, render_state) = self.creator.create(cc);
 
-        // ManuallyDrop is required because the integration object needs to be dropped before
-        // the app drops for gpu_allocator drop order reasons.
-        let integration = ManuallyDrop::new(Integration::new(
+        // ManuallyDrop<Box<>> is required because:
+        // 1. Integration must drop before App for gpu_allocator drop order reasons.
+        // 2. Box gives a stable heap address so the raw pointer in
+        //    register_immediate_viewport_renderer remains valid.
+        let mut integration = Box::new(Integration::new(
             &self.app_id,
             event_loop,
             context,
@@ -249,7 +251,10 @@ where
             self.run_option.persistent_egui_memory,
         ));
 
-        self.integration = Some(integration);
+        // Register callback NOW that integration has a stable heap address
+        integration.register_immediate_viewport_renderer(event_loop);
+
+        self.integration = Some(ManuallyDrop::new(integration));
         self.app = Some(app);
     }
 }

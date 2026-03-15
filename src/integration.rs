@@ -3,13 +3,9 @@ use egui::{ahash::HashMapExt, DeferredViewportUiCallback, ViewportIdMap};
 use egui_winit::accesskit_winit::Event as AccessKitEvent;
 use egui_winit::winit::{self, event_loop::ActiveEventLoop};
 use std::time::Instant;
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::collections::HashMap;
 
 use crate::allocator::Allocator;
-use crate::presenters::Presenters;
 use crate::renderer::{EguiCommand, ImageRegistryReceiver, Renderer};
 #[cfg(feature = "persistence")]
 use crate::storage::Storage;
@@ -23,7 +19,7 @@ pub(crate) struct IntegrationEvent {
     pub(crate) accesskit: AccessKitEvent,
 }
 
-pub(crate) type ViewportUiCallback = Arc<dyn Fn(&egui::Context) + Send + Sync>;
+pub(crate) type ViewportUiCallback = std::sync::Arc<dyn Fn(&egui::Context) + Send + Sync>;
 
 #[cfg(feature = "accesskit")]
 impl From<AccessKitEvent> for IntegrationEvent {
@@ -43,7 +39,7 @@ struct Viewport {
     is_first_frame: bool,
     window: winit::window::Window,
     state: egui_winit::State,
-    ui_cb: Option<Arc<DeferredViewportUiCallback>>,
+    ui_cb: Option<std::sync::Arc<DeferredViewportUiCallback>>,
 }
 impl Viewport {
     fn update_viewport_info(&mut self, ctx: &egui::Context) {
@@ -60,15 +56,13 @@ pub(crate) struct Integration<A: Allocator + 'static> {
     _app_id: String,
     beginning: Instant,
 
-    presenters: Arc<Mutex<Presenters>>,
-    renderer: Arc<Mutex<Renderer<A>>>,
+    pub(crate) renderer: Renderer<A>,
 
     pub(crate) context: egui::Context,
-    window_id_to_viewport_id: Arc<Mutex<HashMap<winit::window::WindowId, egui::ViewportId>>>,
-    viewports: Arc<Mutex<ViewportIdMap<Viewport>>>,
-    focused_viewport: Arc<Mutex<Option<egui::ViewportId>>>,
+    window_id_to_viewport_id: HashMap<winit::window::WindowId, egui::ViewportId>,
+    viewports: ViewportIdMap<Viewport>,
+    focused_viewport: Option<egui::ViewportId>,
     max_texture_side: usize,
-
     theme: Option<winit::window::Theme>,
 
     #[cfg(feature = "persistence")]
@@ -97,7 +91,7 @@ impl<A: Allocator + 'static> Integration<A> {
         #[cfg(feature = "persistence")] persistent_windows: bool,
         #[cfg(feature = "persistence")] persistent_egui_memory: bool,
     ) -> Self {
-        let presenters = Arc::new(Mutex::new(Presenters::new(
+        let renderer = Renderer::new(
             render_state.entry.clone(),
             render_state.instance.clone(),
             render_state.physical_device,
@@ -105,13 +99,9 @@ impl<A: Allocator + 'static> Integration<A> {
             render_state.surface_loader.clone(),
             render_state.swapchain_loader.clone(),
             render_state.queue,
+            render_state.queue_family_index,
             render_state.command_pool,
             present_mode,
-        )));
-        let renderer = Renderer::new(
-            render_state.device.clone(),
-            render_state.queue,
-            render_state.queue_family_index,
             render_state.allocator,
             receiver,
         );
@@ -149,9 +139,8 @@ impl<A: Allocator + 'static> Integration<A> {
 
         let mut window_id_to_viewport_id = HashMap::new();
         window_id_to_viewport_id.insert(main_window_id, egui::ViewportId::ROOT);
-        let window_id_to_viewport_id = Arc::new(Mutex::new(window_id_to_viewport_id));
 
-        let viewports = Arc::new(Mutex::new(ViewportIdMap::new()));
+        let mut viewports = ViewportIdMap::new();
         #[allow(unused_mut)] // for accesskit
         let mut root_viewport = Viewport {
             ids: egui::ViewportIdPair::ROOT,
@@ -166,53 +155,25 @@ impl<A: Allocator + 'static> Integration<A> {
 
         #[cfg(feature = "accesskit")]
         {
-            //let ctx = context.clone();
             root_viewport.state.init_accesskit(
                 event_loop,
                 &root_viewport.window,
                 event_loop_proxy.clone(),
-                /*move || {
-                    ctx.enable_accesskit();
-                    ctx.request_repaint();
-                    ctx.accesskit_placeholder_tree_update()
-                },*/
             );
         }
-        {
-            let mut viewports = viewports.lock().unwrap();
-            viewports.insert(egui::ViewportId::ROOT, root_viewport);
-        }
-
-        let focused_viewport = Arc::new(Mutex::new(None));
-
-        egui::Context::set_immediate_viewport_renderer(immediate_viewport_renderer(
-            &presenters,
-            &renderer,
-            &viewports,
-            &window_id_to_viewport_id,
-            &focused_viewport,
-            max_texture_side,
-            theme,
-            #[cfg(feature = "persistence")]
-            &storage,
-            #[cfg(feature = "persistence")]
-            persistent_windows,
-            event_loop,
-        ));
+        viewports.insert(egui::ViewportId::ROOT, root_viewport);
 
         Self {
             _app_id: app_id.to_owned(),
             beginning: Instant::now(),
 
-            presenters,
             renderer,
 
             context,
             window_id_to_viewport_id,
             viewports,
-            focused_viewport,
+            focused_viewport: None,
             max_texture_side,
-
             theme,
 
             #[cfg(feature = "persistence")]
@@ -226,20 +187,161 @@ impl<A: Allocator + 'static> Integration<A> {
         }
     }
 
+    /// Register the immediate viewport renderer callback.
+    /// SAFETY: self must be stored at a stable heap address (e.g. Box<Integration<A>>)
+    /// when this is called. The callback is cleared in destroy() before self drops.
+    pub(crate) fn register_immediate_viewport_renderer(&mut self, event_loop: &ActiveEventLoop) {
+        let ptr = self as *mut Integration<A>;
+        // SAFETY: event loop lives at least as long as this callback
+        let event_loop_ptr = std::ptr::from_ref(event_loop);
+
+        egui::Context::set_immediate_viewport_renderer(move |ctx, immediate_viewport| {
+            // SAFETY: ptr is valid; callback cleared before Integration drops in destroy().
+            let integration = unsafe { &mut *ptr };
+            let event_loop = unsafe { &*event_loop_ptr };
+            integration.immediate_viewport_render(ctx, immediate_viewport, event_loop);
+        });
+    }
+
+    fn immediate_viewport_render(
+        &mut self,
+        ctx: &egui::Context,
+        mut immediate_viewport: egui::ImmediateViewport<'_>,
+        event_loop: &ActiveEventLoop,
+    ) {
+        let raw_input = {
+            let mut window_initialized = false;
+            let viewport = initialize_or_update_viewport(
+                ctx,
+                event_loop,
+                &mut self.window_id_to_viewport_id,
+                self.max_texture_side,
+                &mut self.viewports,
+                self.focused_viewport,
+                immediate_viewport.ids,
+                egui::ViewportClass::Immediate,
+                immediate_viewport.builder,
+                None,
+                &mut window_initialized,
+                self.theme,
+                #[cfg(feature = "persistence")]
+                &self.storage,
+                #[cfg(feature = "persistence")]
+                self.persistent_windows,
+            );
+            if window_initialized {
+                self.renderer
+                    .ensure_viewport_context(viewport.ids.this, &viewport.window);
+            }
+            egui_winit::apply_viewport_builder_to_window(ctx, &viewport.window, &viewport.builder);
+
+            let mut raw_input = viewport.state.take_egui_input(&viewport.window);
+            raw_input.viewports = self
+                .viewports
+                .iter()
+                .map(|(id, viewport)| (*id, viewport.info.clone()))
+                .collect();
+
+            raw_input
+        };
+
+        let egui::FullOutput {
+            platform_output,
+            textures_delta,
+            shapes,
+            pixels_per_point,
+            viewport_output,
+        } = ctx.run(raw_input, |ctx| {
+            (immediate_viewport.viewport_ui_cb)(ctx);
+        });
+
+        let viewport_id = immediate_viewport.ids.this;
+        let viewport = self.viewports.get_mut(&viewport_id).unwrap();
+        viewport.info.events.clear();
+        viewport
+            .state
+            .handle_platform_output(&viewport.window, platform_output);
+
+        let clipped_primitives = ctx.tessellate(shapes, pixels_per_point);
+        let scale = ctx.zoom_factor();
+        let size = viewport.window.inner_size();
+        let window_ref = &viewport.window;
+
+        self.renderer.present_viewport_auto(
+            viewport_id,
+            window_ref,
+            clipped_primitives,
+            textures_delta,
+            scale,
+            size,
+        );
+
+        let viewport = self.viewports.get_mut(&viewport_id).unwrap();
+        if viewport.is_first_frame {
+            viewport.is_first_frame = false;
+        } else {
+            viewport.window.set_visible(true);
+        }
+
+        // handle viewport output
+        for (&vp_id, output) in &viewport_output {
+            let ids = egui::ViewportIdPair::from_self_and_parent(vp_id, output.parent);
+
+            let mut window_initialized = false;
+            let viewport = initialize_or_update_viewport(
+                ctx,
+                event_loop,
+                &mut self.window_id_to_viewport_id,
+                self.max_texture_side,
+                &mut self.viewports,
+                self.focused_viewport,
+                ids,
+                output.class,
+                output.builder.clone(),
+                output.viewport_ui_cb.clone(),
+                &mut window_initialized,
+                self.theme,
+                #[cfg(feature = "persistence")]
+                &self.storage,
+                #[cfg(feature = "persistence")]
+                self.persistent_windows,
+            );
+            if window_initialized {
+                self.renderer
+                    .ensure_viewport_context(viewport.ids.this, &viewport.window);
+            }
+
+            viewport.info.focused = Some(self.focused_viewport == Some(vp_id));
+            let mut _actions = Vec::new();
+            egui_winit::process_viewport_commands(
+                ctx,
+                &mut viewport.info,
+                output.commands.clone(),
+                &viewport.window,
+                &mut _actions,
+            );
+        }
+
+        // Prune dead viewports
+        let active_viewports_ids: egui::ViewportIdSet = viewport_output.keys().copied().collect();
+        self.viewports.retain(|id, _| active_viewports_ids.contains(id));
+        self.renderer.destroy_viewports(&active_viewports_ids);
+        self.window_id_to_viewport_id
+            .retain(|_, id| active_viewports_ids.contains(id));
+    }
+
     pub(crate) fn viewport_id_from_window_id(
         &self,
         window_id: winit::window::WindowId,
     ) -> Option<egui::ViewportId> {
-        let window_id_to_viewport_id = self.window_id_to_viewport_id.lock().unwrap();
-        window_id_to_viewport_id.get(&window_id).copied()
+        self.window_id_to_viewport_id.get(&window_id).copied()
     }
 
     pub(crate) fn get_viewport_size(
         &self,
         viewport_id: egui::ViewportId,
     ) -> Option<winit::dpi::PhysicalSize<u32>> {
-        let viewports = self.viewports.lock().unwrap();
-        let viewport = viewports.get(&viewport_id)?;
+        let viewport = self.viewports.get(&viewport_id)?;
         Some(viewport.window.inner_size())
     }
 
@@ -252,13 +354,11 @@ impl<A: Allocator + 'static> Integration<A> {
         app: &mut impl crate::App,
     ) -> bool {
         let event_response = {
-            let window_id_to_viewport_id = self.window_id_to_viewport_id.lock().unwrap();
-            let Some(&viewport_id) = window_id_to_viewport_id.get(&window_id) else {
+            let Some(&viewport_id) = self.window_id_to_viewport_id.get(&window_id) else {
                 return false;
             };
 
-            let mut viewports = self.viewports.lock().unwrap();
-            let Some(viewport) = viewports.get_mut(&viewport_id) else {
+            let Some(viewport) = self.viewports.get_mut(&viewport_id) else {
                 return false;
             };
 
@@ -270,24 +370,21 @@ impl<A: Allocator + 'static> Integration<A> {
                 }
                 winit::event::WindowEvent::Focused(focused) => {
                     if *focused {
-                        *self.focused_viewport.lock().unwrap() = Some(viewport_id);
+                        self.focused_viewport = Some(viewport_id);
                     } else {
-                        *self.focused_viewport.lock().unwrap() = None;
+                        self.focused_viewport = None;
                     }
                 }
                 winit::event::WindowEvent::Resized(_) => {
-                    let mut presenters = self.presenters.lock().unwrap();
-                    presenters.dirty_swapchain(viewport_id);
+                    self.renderer.mark_viewport_dirty(viewport_id);
                 }
                 winit::event::WindowEvent::ScaleFactorChanged { .. } => {
-                    let mut presenters = self.presenters.lock().unwrap();
-                    presenters.dirty_swapchain(viewport_id);
+                    self.renderer.mark_viewport_dirty(viewport_id);
                 }
                 winit::event::WindowEvent::CloseRequested => {
                     if viewport_id == egui::ViewportId::ROOT {
                         event_loop.exit();
                     }
-
                     viewport.info.events.push(egui::ViewportEvent::Close);
                     self.context.request_repaint_of(viewport.ids.parent);
                 }
@@ -325,12 +422,10 @@ impl<A: Allocator + 'static> Integration<A> {
         } = event;
         {
             use egui_winit::accesskit_winit::WindowEvent;
-
             let Some(viewport_id) = self.viewport_id_from_window_id(*window_id) else {
                 return;
             };
-            let mut viewports = self.viewports.lock().unwrap();
-            let viewport = viewports.get_mut(&viewport_id).unwrap();
+            let viewport = self.viewports.get_mut(&viewport_id).unwrap();
             if let WindowEvent::ActionRequested(request) = window_event {
                 viewport.state.on_accesskit_action_request(request.clone());
             }
@@ -345,16 +440,14 @@ impl<A: Allocator + 'static> Integration<A> {
         window_id: winit::window::WindowId,
         create_swapchain_internal: bool,
     ) -> (Option<EguiCommand>, PaintResult) {
-        let (viewport_id, viewport_ui_cb, raw_input) = {
-            let window_id_to_viewport_id = self.window_id_to_viewport_id.lock().unwrap();
-            let Some(viewport_id) = window_id_to_viewport_id.get(&window_id).copied() else {
+        let (viewport_id, viewport_ui_cb, raw_input, window_inner_size, window_scale_factor) = {
+            let Some(viewport_id) = self.window_id_to_viewport_id.get(&window_id).copied() else {
                 log::error!("window_id not found");
                 return (None, PaintResult::Wait);
             };
 
             if viewport_id != egui::ViewportId::ROOT {
-                let viewports = self.viewports.lock().unwrap();
-                let Some(viewport) = viewports.get(&viewport_id) else {
+                let Some(viewport) = self.viewports.get(&viewport_id) else {
                     log::error!("viewport not found");
                     return (None, PaintResult::Wait);
                 };
@@ -362,7 +455,7 @@ impl<A: Allocator + 'static> Integration<A> {
                 if viewport.ui_cb.is_none() {
                     // This only happens in an immediate viewport.
                     // need to repaint with parent viewport.
-                    if viewports.get(&viewport.ids.parent).is_some() {
+                    if self.viewports.get(&viewport.ids.parent).is_some() {
                         self.context.request_repaint_of(viewport.ids.parent);
                         return (None, PaintResult::Wait);
                     }
@@ -370,31 +463,31 @@ impl<A: Allocator + 'static> Integration<A> {
                 }
             }
 
-            let mut viewports = self.viewports.lock().unwrap();
-            let Some(viewport) = viewports.get_mut(&viewport_id) else {
+            let Some(viewport) = self.viewports.get_mut(&viewport_id) else {
                 log::error!("viewport not found");
                 return (None, PaintResult::Wait);
             };
             viewport.update_viewport_info(&self.context);
 
             let viewport_ui_cb = viewport.ui_cb.clone();
+            let window_inner_size = viewport.window.inner_size();
+            let window_scale_factor = viewport.window.scale_factor() as f32;
 
-            let mut presenters = self.presenters.lock().unwrap();
             if create_swapchain_internal {
-                presenters.recreate_swapchain_if_needed(viewport_id, &viewport.window);
-            } else {
-                presenters.destroy_swapchain_if_needed(viewport_id);
+                self.renderer
+                    .ensure_viewport_context(viewport_id, &viewport.window);
             }
+            // For handle path (create_swapchain_internal=false), no swapchain management here.
 
             let mut raw_input = viewport.state.take_egui_input(&viewport.window);
-
             raw_input.time = Some(self.beginning.elapsed().as_secs_f64());
-            raw_input.viewports = viewports
+            raw_input.viewports = self
+                .viewports
                 .iter()
-                .map(|(id, viewport)| (*id, viewport.info.clone()))
+                .map(|(id, vp)| (*id, vp.info.clone()))
                 .collect();
 
-            (viewport_id, viewport_ui_cb, raw_input)
+            (viewport_id, viewport_ui_cb, raw_input, window_inner_size, window_scale_factor)
         };
 
         let egui::FullOutput {
@@ -429,43 +522,54 @@ impl<A: Allocator + 'static> Integration<A> {
             full_output
         };
 
-        let egui_cmd = {
-            let mut viewports = self.viewports.lock().unwrap();
-            let egui_cmd = if let Some(viewport) = viewports.get_mut(&viewport_id) {
+        let egui_cmd_or_auto = {
+            let egui_cmd = if let Some(viewport) = self.viewports.get_mut(&viewport_id) {
                 viewport.info.events.clear();
-
                 viewport
                     .state
                     .handle_platform_output(&viewport.window, platform_output);
 
-                let mut renderer = self.renderer.lock().unwrap();
-
                 let clipped_primitives = self.context.tessellate(shapes, pixels_per_point);
-                renderer.create_egui_cmd(
-                    viewport.ids.this,
-                    clipped_primitives,
-                    textures_delta,
-                    viewport.window.scale_factor() as f32 * self.context.zoom_factor(),
-                    viewport.window.inner_size(),
-                )
+                let scale = window_scale_factor * self.context.zoom_factor();
+
+                if create_swapchain_internal {
+                    // Auto path: present immediately, return None
+                    self.renderer.present_viewport_auto(
+                        viewport_id,
+                        &viewport.window,
+                        clipped_primitives,
+                        textures_delta,
+                        scale,
+                        window_inner_size,
+                    );
+                    None
+                } else {
+                    // Handle path: create EguiCommand for user
+                    let cmd = self.renderer.create_egui_cmd(
+                        viewport_id,
+                        clipped_primitives,
+                        textures_delta,
+                        scale,
+                        window_inner_size,
+                    );
+                    Some(cmd)
+                }
             } else {
                 return (None, PaintResult::Wait);
             };
 
-            for (&viewport_id, output) in &viewport_output {
-                let mut window_id_to_viewport_id = self.window_id_to_viewport_id.lock().unwrap();
+            for (&vp_id, output) in &viewport_output {
+                let ids = egui::ViewportIdPair::from_self_and_parent(vp_id, output.parent);
+                let focused_viewport = self.focused_viewport;
 
-                let ids = egui::ViewportIdPair::from_self_and_parent(viewport_id, output.parent);
-
-                let focused_viewport = self.focused_viewport.lock().unwrap();
                 let mut window_initialized = false;
                 let viewport = initialize_or_update_viewport(
                     &self.context,
                     event_loop,
-                    &mut window_id_to_viewport_id,
+                    &mut self.window_id_to_viewport_id,
                     self.max_texture_side,
-                    &mut viewports,
-                    *focused_viewport,
+                    &mut self.viewports,
+                    focused_viewport,
                     ids,
                     output.class,
                     output.builder.clone(),
@@ -484,7 +588,7 @@ impl<A: Allocator + 'static> Integration<A> {
                     });
                 }
 
-                viewport.info.focused = Some(*focused_viewport == Some(viewport_id));
+                viewport.info.focused = Some(self.focused_viewport == Some(vp_id));
                 let mut _actions = Vec::new();
                 egui_winit::process_viewport_commands(
                     &self.context,
@@ -495,26 +599,19 @@ impl<A: Allocator + 'static> Integration<A> {
                 );
             }
 
-            if let Some(viewport) = viewports.get_mut(&viewport_id) {
+            if let Some(viewport) = self.viewports.get_mut(&viewport_id) {
                 if viewport.window.is_minimized() == Some(true) {
-                    // On Mac, a minimized Window uses up all CPU:
-                    // https://github.com/emilk/egui/issues/325
-                    // std::thread::sleep(std::time::Duration::from_millis(10));
+                    // On Mac, a minimized Window uses up all CPU
                 }
             }
 
             // Prune dead viewports
             let active_viewports_ids: egui::ViewportIdSet =
                 viewport_output.keys().copied().collect();
-            viewports.retain(|id, _| active_viewports_ids.contains(id));
-            {
-                let mut renderer = self.renderer.lock().unwrap();
-                let mut presenters = self.presenters.lock().unwrap();
-                let mut window_id_to_viewport_id = self.window_id_to_viewport_id.lock().unwrap();
-                presenters.destroy_viewports(&active_viewports_ids);
-                renderer.destroy_viewports(&active_viewports_ids);
-                window_id_to_viewport_id.retain(|_, id| active_viewports_ids.contains(id));
-            }
+            self.viewports.retain(|id, _| active_viewports_ids.contains(id));
+            self.renderer.destroy_viewports(&active_viewports_ids);
+            self.window_id_to_viewport_id
+                .retain(|_, id| active_viewports_ids.contains(id));
 
             egui_cmd
         };
@@ -522,12 +619,7 @@ impl<A: Allocator + 'static> Integration<A> {
         // autosave
         self.maybe_autosave(app);
 
-        (Some(egui_cmd), PaintResult::Wait)
-    }
-
-    pub(crate) fn present_egui(&mut self, viewport_id: egui::ViewportId, egui_cmd: EguiCommand) {
-        let mut presenters = self.presenters.lock().unwrap();
-        presenters.present_egui(viewport_id, egui_cmd);
+        (egui_cmd_or_auto, PaintResult::Wait)
     }
 
     pub(crate) fn paint(
@@ -543,11 +635,9 @@ impl<A: Allocator + 'static> Integration<A> {
         let handle_redraw = app.request_redraw(viewport_id);
         let paint_result = match handle_redraw {
             crate::HandleRedraw::Auto => {
-                let (egui_cmd, paint_result) =
+                let (_, paint_result) =
                     self.run_ui_and_record_paint_cmd(event_loop, app, window_id, true);
-                if let Some(egui_cmd) = egui_cmd {
-                    self.present_egui(viewport_id, egui_cmd);
-                }
+                // auto path presents internally
                 paint_result
             }
             crate::HandleRedraw::Handle(handler) => {
@@ -562,8 +652,7 @@ impl<A: Allocator + 'static> Integration<A> {
             }
         };
 
-        let mut viewports = self.viewports.lock().unwrap();
-        if let Some(viewport) = viewports.get_mut(&viewport_id) {
+        if let Some(viewport) = self.viewports.get_mut(&viewport_id) {
             if viewport.is_first_frame {
                 viewport.is_first_frame = false;
             } else {
@@ -578,10 +667,7 @@ impl<A: Allocator + 'static> Integration<A> {
     }
 
     pub(crate) fn paint_all(&mut self, event_loop: &ActiveEventLoop, app: &mut impl crate::App) {
-        let window_ids = {
-            let window_id_to_viewport_id = self.window_id_to_viewport_id.lock().unwrap();
-            window_id_to_viewport_id.keys().copied().collect::<Vec<_>>()
-        };
+        let window_ids = self.window_id_to_viewport_id.keys().copied().collect::<Vec<_>>();
         for window_id in window_ids {
             self.paint(event_loop, window_id, app);
         }
@@ -602,9 +688,8 @@ impl<A: Allocator + 'static> Integration<A> {
     pub(crate) fn save(&mut self, app: &mut impl crate::App) {
         let storage = &mut self.storage;
         if self.persistent_windows {
-            let viewports = self.viewports.lock().unwrap();
             let mut windows = HashMap::new();
-            for (&id, viewport) in viewports.iter() {
+            for (&id, viewport) in self.viewports.iter() {
                 let settings = egui_winit::WindowSettings::from_window(
                     self.context.zoom_factor(),
                     &viewport.window,
@@ -621,11 +706,9 @@ impl<A: Allocator + 'static> Integration<A> {
     }
 
     pub fn destroy(&mut self) {
-        let mut presenters = self.presenters.lock().unwrap();
-        let mut renderer = self.renderer.lock().unwrap();
-        presenters.destroy_root();
-        renderer.destroy_root();
+        // Clear the immediate viewport renderer callback first
         egui::Context::set_immediate_viewport_renderer(|_, _| {});
+        self.renderer.destroy();
     }
 }
 
@@ -807,153 +890,5 @@ fn restore_main_window(
         if let Some(window_settings) = window_settings {
             window_settings.initialize_window(main_window);
         }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn immediate_viewport_renderer(
-    presenters: &Arc<Mutex<Presenters>>,
-    renderer: &Arc<Mutex<Renderer<impl Allocator>>>,
-    viewports: &Arc<Mutex<ViewportIdMap<Viewport>>>,
-    window_id_to_viewport_id: &Arc<Mutex<HashMap<winit::window::WindowId, egui::ViewportId>>>,
-    focused_viewport: &Arc<Mutex<Option<egui::ViewportId>>>,
-    max_texture_side: usize,
-    theme: Option<winit::window::Theme>,
-    #[cfg(feature = "persistence")] storage: &Storage,
-    #[cfg(feature = "persistence")] persistent_windows: bool,
-    event_loop: &ActiveEventLoop,
-) -> impl for<'b, 'a> Fn(&'b egui::Context, egui::ImmediateViewport<'a>) {
-    let presenters = presenters.clone();
-    let renderer = renderer.clone();
-    let viewports = viewports.clone();
-    let window_id_to_viewport_id = window_id_to_viewport_id.clone();
-    let focused_viewport = focused_viewport.clone();
-    #[cfg(feature = "persistence")]
-    let storage = storage.clone();
-
-    // SAFETY: the event loop lives longer than this callback
-    #[allow(unsafe_code)]
-    let event_loop = unsafe { std::ptr::from_ref::<ActiveEventLoop>(event_loop).as_ref().unwrap() };
-
-    move |ctx, mut immediate_viewport| {
-        let mut renderer = renderer.lock().unwrap();
-        let mut presenters = presenters.lock().unwrap();
-        let mut viewports = viewports.lock().unwrap();
-        let mut window_id_to_viewport_id = window_id_to_viewport_id.lock().unwrap();
-        let focused_viewport = focused_viewport.lock().unwrap();
-
-        let raw_input = {
-            let mut window_initialized = false;
-            let viewport = initialize_or_update_viewport(
-                ctx,
-                event_loop,
-                &mut window_id_to_viewport_id,
-                max_texture_side,
-                &mut viewports,
-                *focused_viewport,
-                immediate_viewport.ids,
-                egui::ViewportClass::Immediate,
-                immediate_viewport.builder,
-                None,
-                &mut window_initialized,
-                theme,
-                #[cfg(feature = "persistence")]
-                &storage,
-                #[cfg(feature = "persistence")]
-                persistent_windows,
-            );
-            if window_initialized {
-                presenters.recreate_swapchain_if_needed(viewport.ids.this, &viewport.window);
-            }
-            egui_winit::apply_viewport_builder_to_window(ctx, &viewport.window, &viewport.builder);
-
-            let mut raw_input = viewport.state.take_egui_input(&viewport.window);
-            raw_input.viewports = viewports
-                .iter()
-                .map(|(id, viewport)| (*id, viewport.info.clone()))
-                .collect();
-
-            raw_input
-        };
-
-        let egui::FullOutput {
-            platform_output,
-            textures_delta,
-            shapes,
-            pixels_per_point,
-            viewport_output,
-        } = {
-            ctx.run(raw_input, |ctx| {
-                (immediate_viewport.viewport_ui_cb)(ctx);
-            })
-        };
-
-        let viewport = viewports.get_mut(&immediate_viewport.ids.this).unwrap();
-        viewport.info.events.clear();
-
-        viewport
-            .state
-            .handle_platform_output(&viewport.window, platform_output);
-
-        let clipped_primitives = ctx.tessellate(shapes, pixels_per_point);
-        let egui_cmd = renderer.create_egui_cmd(
-            viewport.ids.this,
-            clipped_primitives,
-            textures_delta,
-            ctx.zoom_factor(),
-            viewport.window.inner_size(),
-        );
-
-        presenters.present_egui(viewport.ids.this, egui_cmd);
-        if viewport.is_first_frame {
-            viewport.is_first_frame = false;
-        } else {
-            viewport.window.set_visible(true);
-        }
-
-        // handle viewport output
-        for (&viewport_id, output) in &viewport_output {
-            let ids = egui::ViewportIdPair::from_self_and_parent(viewport_id, output.parent);
-
-            let mut window_initialized = false;
-            let viewport = initialize_or_update_viewport(
-                ctx,
-                event_loop,
-                &mut window_id_to_viewport_id,
-                max_texture_side,
-                &mut viewports,
-                *focused_viewport,
-                ids,
-                output.class,
-                output.builder.clone(),
-                output.viewport_ui_cb.clone(),
-                &mut window_initialized,
-                theme,
-                #[cfg(feature = "persistence")]
-                &storage,
-                #[cfg(feature = "persistence")]
-                persistent_windows,
-            );
-            if window_initialized {
-                presenters.recreate_swapchain_if_needed(viewport.ids.this, &viewport.window);
-            }
-
-            viewport.info.focused = Some(*focused_viewport == Some(viewport_id));
-            let mut _actions = Vec::new();
-            egui_winit::process_viewport_commands(
-                ctx,
-                &mut viewport.info,
-                output.commands.clone(),
-                &viewport.window,
-                &mut _actions,
-            );
-        }
-
-        // Prune dead viewports
-        let active_viewports_ids: egui::ViewportIdSet = viewport_output.keys().copied().collect();
-        viewports.retain(|id, _| active_viewports_ids.contains(id));
-        presenters.destroy_viewports(&active_viewports_ids);
-        renderer.destroy_viewports(&active_viewports_ids);
-        window_id_to_viewport_id.retain(|_, id| active_viewports_ids.contains(id));
     }
 }
