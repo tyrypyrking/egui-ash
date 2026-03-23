@@ -58,10 +58,7 @@ ash = { version = "0.38.0", default-features = false, features = ["linked", "deb
 egui_extras = { version = "0.33.3", features = ["all_loaders"] }
 egui-ash = { path = ".", features = ["persistence"] }
 egui_tiles = "0.14.1"
-glam = "0.30.10"
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp"] }
 log = "0.4.29"
-tobj = "4.0.3"
 
 [[example]]
 name = "v2_simple"
@@ -74,3 +71,15 @@ path = "examples/egui_ash_simple/main.rs"
 [[example]]
 name = "images"
 path = "examples/images/main.rs"
+
+[[example]]
+name = "egui_ash_vulkan"
+path = "examples/egui_ash_vulkan/main.rs"
+
+[[example]]
+name = "scene_view"
+path = "examples/scene_view/main.rs"
+
+[[example]]
+name = "tiles"
+path = "examples/tiles/main.rs"

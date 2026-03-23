@@ -188,8 +188,9 @@ pub fn create_vulkan_context(app_name: &str) -> (VulkanContext, VulkanResources)
     // Enable Vulkan 1.2 features (timeline semaphores) + 1.3 features (synchronization2)
     let mut vulkan_12_features =
         vk::PhysicalDeviceVulkan12Features::default().timeline_semaphore(true);
-    let mut vulkan_13_features =
-        vk::PhysicalDeviceVulkan13Features::default().synchronization2(true);
+    let mut vulkan_13_features = vk::PhysicalDeviceVulkan13Features::default()
+        .synchronization2(true)
+        .dynamic_rendering(true);
 
     let device_create_info = vk::DeviceCreateInfo::default()
         .queue_create_infos(&queue_create_infos)
