@@ -66,3 +66,11 @@ tobj = "4.0.3"
 [[example]]
 name = "v2_simple"
 path = "examples/v2_simple/main.rs"
+
+[[example]]
+name = "egui_ash_simple"
+path = "examples/egui_ash_simple/main.rs"
+
+[[example]]
+name = "images"
+path = "examples/images/main.rs"

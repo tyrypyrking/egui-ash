@@ -1,327 +1,228 @@
-use ash::{ext::debug_utils, vk, Device, Entry, Instance};
-use egui_ash::{
-    raw_window_handle::{HasDisplayHandle as _, HasWindowHandle as _},
-    winit,
-};
-use std::{collections::HashSet, ffi::CString};
+//! Shared Vulkan setup helpers for v2 egui-ash examples.
+//!
+//! Creates a `VulkanContext` with:
+//! - Vulkan 1.3 API version
+//! - Timeline semaphores (1.2 feature)
+//! - Synchronization2 (1.3 feature)
+//! - VK_KHR_swapchain device extension
+//! - A graphics queue family with 2+ queues (separate host/engine)
+//! - Optional validation layers (debug builds only)
 
-const ENABLE_VALIDATION_LAYERS: bool = true;
-const VALIDATION: [&str; 1] = ["VK_LAYER_KHRONOS_validation"];
+use ash::vk;
+use egui_ash::VulkanContext;
+use std::ffi::{CStr, CString};
 
-unsafe extern "system" fn vulkan_debug_utils_callback(
-    message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
-    message_types: vk::DebugUtilsMessageTypeFlagsEXT,
-    p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
-    _p_user_data: *mut std::ffi::c_void,
+const ENABLE_VALIDATION: bool = cfg!(debug_assertions);
+
+unsafe extern "system" fn debug_callback(
+    severity: vk::DebugUtilsMessageSeverityFlagsEXT,
+    _types: vk::DebugUtilsMessageTypeFlagsEXT,
+    data: *const vk::DebugUtilsMessengerCallbackDataEXT,
+    _user_data: *mut std::ffi::c_void,
 ) -> vk::Bool32 {
-    let severity = match message_severity {
-        vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => "[VERBOSE]",
-        vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => "[WARNING]",
-        vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => "[ERROR]",
-        vk::DebugUtilsMessageSeverityFlagsEXT::INFO => "[INFO]",
-        _ => panic!("[UNKNOWN]"),
-    };
-    let types = match message_types {
-        vk::DebugUtilsMessageTypeFlagsEXT::GENERAL => "[GENERAL]",
-        vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE => "[PERFORMANCE]",
-        vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION => "[VALIDATION]",
-        _ => panic!("[UNKNOWN]"),
-    };
-    let message = std::ffi::CStr::from_ptr((*p_callback_data).p_message);
-    println!("[DEBUG]{}{}{:?}", severity, types, message);
-
+    let msg = CStr::from_ptr((*data).p_message);
+    match severity {
+        vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => eprintln!("[VK ERROR] {:?}", msg),
+        vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => eprintln!("[VK WARN]  {:?}", msg),
+        _ => {}
+    }
     vk::FALSE
 }
 
-pub fn create_entry() -> Entry {
-    ash::Entry::linked()
+/// Pick surface instance extensions for the current platform at compile time.
+fn platform_surface_extensions() -> Vec<*const i8> {
+    let mut exts = vec![ash::khr::surface::NAME.as_ptr()];
+
+    #[cfg(target_os = "linux")]
+    {
+        exts.push(ash::khr::xlib_surface::NAME.as_ptr());
+        exts.push(ash::khr::wayland_surface::NAME.as_ptr());
+        exts.push(ash::khr::xcb_surface::NAME.as_ptr());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        exts.push(ash::khr::win32_surface::NAME.as_ptr());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        exts.push(ash::ext::metal_surface::NAME.as_ptr());
+    }
+
+    exts
 }
 
-pub fn create_instance(
-    required_instance_extensions: &[CString],
-    entry: &Entry,
-) -> (Instance, debug_utils::Instance, vk::DebugUtilsMessengerEXT) {
-    let mut debug_utils_messenger_create_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
-        .flags(vk::DebugUtilsMessengerCreateFlagsEXT::empty())
+/// RAII holder for Vulkan objects owned by the example's main function.
+/// Destroyed after `run()` returns.
+pub struct VulkanResources {
+    instance: ash::Instance,
+    device: ash::Device,
+    debug_utils_loader: ash::ext::debug_utils::Instance,
+    debug_messenger: vk::DebugUtilsMessengerEXT,
+}
+
+impl Drop for VulkanResources {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.device_wait_idle().ok();
+            self.device.destroy_device(None);
+            if self.debug_messenger != vk::DebugUtilsMessengerEXT::null() {
+                self.debug_utils_loader
+                    .destroy_debug_utils_messenger(self.debug_messenger, None);
+            }
+            self.instance.destroy_instance(None);
+        }
+    }
+}
+
+/// Create a `VulkanContext` and its backing resources for an example.
+///
+/// `app_name` is used in the Vulkan application info.
+pub fn create_vulkan_context(app_name: &str) -> (VulkanContext, VulkanResources) {
+    let entry = ash::Entry::linked();
+
+    // -- Instance --
+    let app_name_c = CString::new(app_name).unwrap();
+    let app_info = vk::ApplicationInfo::default()
+        .application_name(&app_name_c)
+        .application_version(vk::make_api_version(0, 1, 0, 0))
+        .api_version(vk::API_VERSION_1_3);
+
+    let mut instance_extensions = platform_surface_extensions();
+    if ENABLE_VALIDATION {
+        instance_extensions.push(ash::ext::debug_utils::NAME.as_ptr());
+    }
+
+    let validation_layer = CString::new("VK_LAYER_KHRONOS_validation").unwrap();
+    let layer_names: Vec<*const i8> = if ENABLE_VALIDATION {
+        vec![validation_layer.as_ptr()]
+    } else {
+        vec![]
+    };
+
+    let mut debug_create_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
         .message_severity(
             vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
-                // | vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
-                // | vk::DebugUtilsMessageSeverityFlagsEXT::INFO
-                    | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
+                | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
         )
         .message_type(
             vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
                 | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
                 | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
         )
-        .pfn_user_callback(Some(vulkan_debug_utils_callback));
+        .pfn_user_callback(Some(debug_callback));
 
-    let app_name = std::ffi::CString::new("egui-ash example simple").unwrap();
-    let app_info = vk::ApplicationInfo::default()
-        .application_name(&app_name)
-        .application_version(vk::make_api_version(1, 0, 0, 0))
-        .api_version(vk::API_VERSION_1_0);
-    let mut extension_names = vec![debug_utils::NAME.as_ptr()];
-    for ext in required_instance_extensions {
-        let name = ext.as_ptr();
-        extension_names.push(name);
-    }
-     #[cfg(any(target_os = "macos", target_os = "ios"))]
-    {
-        extension_names.push(vk::KhrPortabilityEnumerationFn::name().as_ptr());
-        extension_names.push(vk::KhrGetPhysicalDeviceProperties2Fn::name().as_ptr());
-    }
-    let create_flags = if cfg!(any(target_os = "macos", target_os = "ios")) {
-        vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
-    } else {
-        vk::InstanceCreateFlags::default()
-    };
-
-    let raw_layer_names = VALIDATION
-        .iter()
-        .map(|l| std::ffi::CString::new(*l).unwrap())
-        .collect::<Vec<_>>();
-    let layer_names = raw_layer_names
-        .iter()
-        .map(|l| l.as_ptr())
-        .collect::<Vec<*const i8>>();
-    let instance_create_info = vk::InstanceCreateInfo::default()
-        .push_next(&mut debug_utils_messenger_create_info)
+    let mut instance_info = vk::InstanceCreateInfo::default()
         .application_info(&app_info)
-        .flags(create_flags)
-        .enabled_extension_names(&extension_names);
-    let instance_create_info = if ENABLE_VALIDATION_LAYERS {
-        instance_create_info.enabled_layer_names(&layer_names)
-    } else {
-        instance_create_info
-    };
+        .enabled_extension_names(&instance_extensions)
+        .enabled_layer_names(&layer_names);
+    if ENABLE_VALIDATION {
+        instance_info = instance_info.push_next(&mut debug_create_info);
+    }
+
     let instance = unsafe {
         entry
-            .create_instance(&instance_create_info, None)
-            .expect("Failed to create instance")
+            .create_instance(&instance_info, None)
+            .expect("failed to create Vulkan instance")
     };
 
-    // setup debug utils
-    let debug_utils_loader = debug_utils::Instance::new(entry, &instance);
-    let debug_messenger = if ENABLE_VALIDATION_LAYERS {
+    let debug_utils_loader = ash::ext::debug_utils::Instance::new(&entry, &instance);
+    let debug_messenger = if ENABLE_VALIDATION {
         unsafe {
             debug_utils_loader
-                .create_debug_utils_messenger(&debug_utils_messenger_create_info, None)
-                .expect("Failed to create debug utils messenger")
+                .create_debug_utils_messenger(&debug_create_info, None)
+                .expect("failed to create debug messenger")
         }
     } else {
         vk::DebugUtilsMessengerEXT::null()
     };
 
-    (instance, debug_utils_loader, debug_messenger)
-}
-
-pub fn create_surface_loader(entry: &Entry, instance: &Instance) -> ash::khr::surface::Instance {
-    ash::khr::surface::Instance::new(entry, instance)
-}
-
-pub fn create_swapchain_loader(
-    instance: &Instance,
-    device: &Device,
-) -> ash::khr::swapchain::Device {
-    ash::khr::swapchain::Device::new(instance, device)
-}
-
-pub fn create_surface(
-    entry: &Entry,
-    instance: &Instance,
-    window: &winit::window::Window,
-) -> vk::SurfaceKHR {
-    unsafe {
-        ash_window::create_surface(
-            entry,
-            instance,
-            window
-                .display_handle()
-                .expect("Unable to get a display handle")
-                .as_raw(),
-            window
-                .window_handle()
-                .expect("Unable to get a window handle")
-                .as_raw(),
-            None,
-        )
-        .expect("Failed to create surface")
-    }
-}
-
-pub fn create_physical_device(
-    instance: &Instance,
-    surface_loader: &ash::khr::surface::Instance,
-    surface: vk::SurfaceKHR,
-    required_device_extensions: &[CString],
-) -> (vk::PhysicalDevice, vk::PhysicalDeviceMemoryProperties, u32) {
-    let mut queue_family_index: Option<usize> = None;
-
-    let (physical_device, physical_device_memory_properties) = {
-        let physical_devices = unsafe {
-            instance
-                .enumerate_physical_devices()
-                .expect("Failed to enumerate physical devices")
-        };
-        let physical_device = physical_devices.into_iter().find(|physical_device| {
-            let queue_families =
-                unsafe { instance.get_physical_device_queue_family_properties(*physical_device) };
-            for (i, queue_family) in queue_families.iter().enumerate() {
-                let mut graphics_queue = false;
-                let mut present_queue = false;
-                if queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
-                    graphics_queue = true;
-                }
-                let present_support = unsafe {
-                    surface_loader
-                        .get_physical_device_surface_support(*physical_device, i as u32, surface)
-                        .unwrap()
-                };
-                if present_support {
-                    present_queue = true;
-                }
-                if graphics_queue && present_queue {
-                    queue_family_index = Some(i);
-                    break;
-                }
-            }
-            let is_queue_family_supported = queue_family_index.is_some();
-
-            // check device extensions
-            let device_extensions = unsafe {
-                instance
-                    .enumerate_device_extension_properties(*physical_device)
-                    .unwrap()
-            };
-            let mut device_extensions_name = vec![];
-            for device_extension in device_extensions {
-                let name = unsafe {
-                    std::ffi::CStr::from_ptr(device_extension.extension_name.as_ptr()).to_owned()
-                };
-                device_extensions_name.push(name);
-            }
-            let mut required_extensions = HashSet::new();
-            for extension in required_device_extensions.iter() {
-                required_extensions.insert(extension.to_owned());
-            }
-            for extension_name in device_extensions_name {
-                required_extensions.remove(&extension_name);
-            }
-            let is_device_extension_supported = required_extensions.is_empty();
-
-            // check swapchain support
-            let surface_formats = unsafe {
-                surface_loader
-                    .get_physical_device_surface_formats(*physical_device, surface)
-                    .unwrap()
-            };
-            let surface_present_modes = unsafe {
-                surface_loader
-                    .get_physical_device_surface_present_modes(*physical_device, surface)
-                    .unwrap()
-            };
-            let is_swapchain_supported =
-                !surface_formats.is_empty() && !surface_present_modes.is_empty();
-
-            is_queue_family_supported && is_swapchain_supported && is_device_extension_supported
-        });
-        let physical_device = physical_device.expect("Failed to get physical device");
-        let physical_device_memory_properties =
-            unsafe { instance.get_physical_device_memory_properties(physical_device) };
-
-        (physical_device, physical_device_memory_properties)
+    // -- Physical device + queue families --
+    let physical_devices = unsafe {
+        instance
+            .enumerate_physical_devices()
+            .expect("failed to enumerate physical devices")
     };
 
-    (
-        physical_device,
-        physical_device_memory_properties,
-        queue_family_index.unwrap() as u32,
-    )
-}
+    let mut chosen: Option<(vk::PhysicalDevice, u32, u32, u32)> = None;
 
-pub fn create_device(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
-    queue_family_index: u32,
-    required_device_extensions: &[CString],
-) -> (Device, vk::Queue) {
-    let queue_priorities = [1.0_f32];
-    let mut queue_create_infos = vec![];
+    for &pd in &physical_devices {
+        let queue_families =
+            unsafe { instance.get_physical_device_queue_family_properties(pd) };
+
+        // Find a graphics family with 2+ queues
+        for (i, qf) in queue_families.iter().enumerate() {
+            if qf.queue_flags.contains(vk::QueueFlags::GRAPHICS) && qf.queue_count >= 2 {
+                chosen = Some((pd, i as u32, 0, 1));
+                break;
+            }
+        }
+        if chosen.is_some() {
+            break;
+        }
+    }
+
+    let (physical_device, queue_family, host_queue_idx, engine_queue_idx) = chosen
+        .expect("no GPU found with a graphics queue family supporting 2+ queues");
+
+    let props = unsafe { instance.get_physical_device_properties(physical_device) };
+    let device_name = unsafe { CStr::from_ptr(props.device_name.as_ptr()) };
+    eprintln!(
+        "Selected GPU: {:?} (family={}, host_q={}, engine_q={})",
+        device_name, queue_family, host_queue_idx, engine_queue_idx
+    );
+
+    // -- Device --
+    let queue_count = if host_queue_idx == engine_queue_idx {
+        1
+    } else {
+        2
+    };
+    let queue_priorities: Vec<f32> = vec![1.0; queue_count as usize];
     let queue_create_info = vk::DeviceQueueCreateInfo::default()
-        .queue_family_index(queue_family_index)
+        .queue_family_index(queue_family)
         .queue_priorities(&queue_priorities);
-    queue_create_infos.push(queue_create_info);
+    let queue_create_infos = [queue_create_info];
 
-    let physical_device_features = vk::PhysicalDeviceFeatures::default();
+    let device_extensions = [ash::khr::swapchain::NAME.as_ptr()];
 
-    let enable_extension_names = required_device_extensions
-        .iter()
-        .map(|s| s.as_ptr())
-        .collect::<Vec<_>>();
+    // Enable Vulkan 1.2 features (timeline semaphores) + 1.3 features (synchronization2)
+    let mut vulkan_12_features =
+        vk::PhysicalDeviceVulkan12Features::default().timeline_semaphore(true);
+    let mut vulkan_13_features =
+        vk::PhysicalDeviceVulkan13Features::default().synchronization2(true);
 
-    // device create info
     let device_create_info = vk::DeviceCreateInfo::default()
         .queue_create_infos(&queue_create_infos)
-        .enabled_features(&physical_device_features)
-        .enabled_extension_names(&enable_extension_names);
+        .enabled_extension_names(&device_extensions)
+        .push_next(&mut vulkan_12_features)
+        .push_next(&mut vulkan_13_features);
 
-    // create device
     let device = unsafe {
         instance
             .create_device(physical_device, &device_create_info, None)
-            .expect("Failed to create device")
+            .expect("failed to create device")
     };
 
-    // get device queue
-    let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
+    let host_queue = unsafe { device.get_device_queue(queue_family, host_queue_idx) };
+    let engine_queue = unsafe { device.get_device_queue(queue_family, engine_queue_idx) };
 
-    (device, queue)
-}
+    let vulkan_context = VulkanContext {
+        entry,
+        instance: instance.clone(),
+        physical_device,
+        device: device.clone(),
+        host_queue,
+        host_queue_family_index: queue_family,
+        engine_queue,
+        engine_queue_family_index: queue_family,
+    };
 
-pub fn create_command_pool(device: &Device, queue_family_index: u32) -> vk::CommandPool {
-    let command_pool_create_info = vk::CommandPoolCreateInfo::default()
-        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-        .queue_family_index(queue_family_index);
-    unsafe {
-        device
-            .create_command_pool(&command_pool_create_info, None)
-            .expect("Failed to create command pool")
-    }
-}
+    let resources = VulkanResources {
+        instance,
+        device,
+        debug_utils_loader,
+        debug_messenger,
+    };
 
-pub fn insert_image_memory_barrier(
-    device: &ash::Device,
-    cmd: &ash::vk::CommandBuffer,
-    image: &ash::vk::Image,
-    src_q_family_index: u32,
-    dst_q_family_index: u32,
-    src_access_mask: ash::vk::AccessFlags,
-    dst_access_mask: ash::vk::AccessFlags,
-    old_image_layout: ash::vk::ImageLayout,
-    new_image_layout: ash::vk::ImageLayout,
-    src_stage_mask: ash::vk::PipelineStageFlags,
-    dst_stage_mask: ash::vk::PipelineStageFlags,
-    subresource_range: ash::vk::ImageSubresourceRange,
-) {
-    let image_memory_barrier = ash::vk::ImageMemoryBarrier::default()
-        .src_queue_family_index(src_q_family_index)
-        .dst_queue_family_index(dst_q_family_index)
-        .src_access_mask(src_access_mask)
-        .dst_access_mask(dst_access_mask)
-        .old_layout(old_image_layout)
-        .new_layout(new_image_layout)
-        .image(*image)
-        .subresource_range(subresource_range);
-    unsafe {
-        device.cmd_pipeline_barrier(
-            *cmd,
-            src_stage_mask,
-            dst_stage_mask,
-            ash::vk::DependencyFlags::BY_REGION,
-            &[],
-            &[],
-            &[image_memory_barrier],
-        );
-    }
+    (vulkan_context, resources)
 }
