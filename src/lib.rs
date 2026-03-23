@@ -1,5 +1,6 @@
 mod compositor;
 mod engine;
+mod engine_thread;
 pub mod event;
 mod mailbox;
 mod render_targets;
