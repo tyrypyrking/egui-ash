@@ -712,10 +712,9 @@ impl Compositor {
         self.device
             .destroy_descriptor_set_layout(self.egui_descriptor_set_layout, None);
 
-        // Swapchain + surface
+        // Swapchain (surface is owned by Host, not compositor)
         self.swapchain_loader
             .destroy_swapchain(self.swapchain, None);
-        self.surface_loader.destroy_surface(self.surface, None);
     }
 
     // ═════════════════════════════════════════════════════════════════════

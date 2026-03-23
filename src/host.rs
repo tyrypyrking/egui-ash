@@ -100,6 +100,9 @@ pub(crate) struct Host<E: EngineRenderer> {
     engine_target_index: Option<usize>,
     composited_target_index: Option<usize>,
 
+    // Persistent UI state (survives across frames)
+    ui_state: E::UiState,
+
     // Options
     clear_color: [f32; 4],
 
@@ -241,6 +244,7 @@ impl<E: EngineRenderer> Host<E> {
             engine_handle,
             engine_target_index: Some(0), // index 0 was sent to engine
             composited_target_index: None,
+            ui_state: E::UiState::default(),
             clear_color: options.clear_color,
             surface,
             _exit_tx: exit_tx,
@@ -347,9 +351,8 @@ impl<E: EngineRenderer> Host<E> {
         // ── 5. Run egui frame ──────────────────────────────────────────────
         let raw_input = self.egui_winit_state.take_egui_input(&self.window);
 
-        let mut ui_state = E::UiState::default();
         let full_output = self.context.run(raw_input, |ctx| {
-            ui(ctx, &engine_status, &mut ui_state, &engine_state, &self.engine_handle);
+            ui(ctx, &engine_status, &mut self.ui_state, &engine_state, &self.engine_handle);
         });
 
         let egui::FullOutput {
@@ -364,7 +367,7 @@ impl<E: EngineRenderer> Host<E> {
             .handle_platform_output(&self.window, platform_output);
 
         // ── 6. Publish UI state ────────────────────────────────────────────
-        self.ui_state_writer.publish(ui_state);
+        self.ui_state_writer.publish(self.ui_state.clone());
 
         // ── 7. Handle restart request ──────────────────────────────────────
         if let Some(new_engine) = self.engine_handle.take_restart() {
@@ -414,17 +417,6 @@ impl<E: EngineRenderer> Host<E> {
             self.window.request_redraw();
         }
         response.consumed
-    }
-
-    /// Signal that the application should exit.
-    pub(crate) fn request_exit(&mut self) {
-        // Send shutdown event to engine
-        let _ = self.event_tx.send(crate::event::EngineEvent::Shutdown);
-    }
-
-    /// Borrow the host window.
-    pub(crate) fn window(&self) -> &egui_winit::winit::window::Window {
-        &self.window
     }
 
     // ─────────────────────────────────────────────────────────────────────

@@ -434,20 +434,10 @@ fn create_vulkan_context() -> (VulkanContext, VulkanResources) {
             break;
         }
 
-        // Fallback: Single queue (same queue for host and engine)
-        for (i, qf) in queue_families.iter().enumerate() {
-            if qf.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
-                chosen = Some((pd, i as u32, 0, 0));
-                break;
-            }
-        }
-        if chosen.is_some() {
-            break;
-        }
     }
 
-    let (physical_device, queue_family, host_queue_idx, engine_queue_idx) =
-        chosen.expect("no suitable physical device found");
+    let (physical_device, queue_family, host_queue_idx, engine_queue_idx) = chosen
+        .expect("no GPU found with a graphics queue family supporting 2+ queues");
 
     let props = unsafe { instance.get_physical_device_properties(physical_device) };
     let device_name = unsafe { CStr::from_ptr(props.device_name.as_ptr()) };

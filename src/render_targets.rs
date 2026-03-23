@@ -169,14 +169,6 @@ impl RenderTargetPool {
         self.timeline
     }
 
-    pub(crate) fn extent(&self) -> vk::Extent2D {
-        self.extent
-    }
-
-    pub(crate) fn format(&self) -> vk::Format {
-        self.format
-    }
-
     pub(crate) fn image(&self, index: usize) -> vk::Image {
         self.images[index]
     }

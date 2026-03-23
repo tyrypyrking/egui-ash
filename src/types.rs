@@ -8,10 +8,13 @@ pub struct VulkanContext {
     pub instance: ash::Instance,
     pub physical_device: vk::PhysicalDevice,
     pub device: ash::Device,
-    /// Queue for host (egui rendering + compositing). Must differ from engine_queue.
+    /// Queue for host (egui rendering + compositing).
+    /// Must be a distinct VkQueue from `engine_queue` (concurrent unprotected access).
+    /// Can be from the same queue family (preferred) or different families.
     pub host_queue: vk::Queue,
     pub host_queue_family_index: u32,
-    /// Queue for engine scene rendering. Must differ from host_queue.
+    /// Queue for engine scene rendering (used from the engine thread).
+    /// Must be a distinct VkQueue from `host_queue`.
     pub engine_queue: vk::Queue,
     pub engine_queue_family_index: u32,
 }
