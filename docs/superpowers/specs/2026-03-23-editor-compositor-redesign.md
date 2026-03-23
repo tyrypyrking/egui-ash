@@ -144,9 +144,9 @@ The user creates both queues before calling `run()`. Using separate queues satis
 ```rust
 pub trait EngineRenderer: Send + 'static {
     /// State written by UI, read by engine each frame
-    type UiState: Send + Clone + Default;
+    type UiState: Send + Sync + Clone + Default;
     /// State written by engine, read by UI each frame
-    type EngineState: Send + Clone + Default;
+    type EngineState: Send + Sync + Clone + Default;
 
     /// Called once on the engine thread.
     fn init(&mut self, ctx: EngineContext);
