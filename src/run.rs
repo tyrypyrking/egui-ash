@@ -67,9 +67,40 @@ where
     ) + 'static,
 {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window_attributes = WindowAttributes::default()
-            .with_visible(true)
-            .with_title("egui-ash");
+        let mut window_attributes = WindowAttributes::default().with_visible(true);
+
+        if let Some(vb) = self.options.viewport_builder.as_ref() {
+            if let Some(title) = &vb.title {
+                window_attributes = window_attributes.with_title(title.clone());
+            }
+            if let Some(size) = vb.inner_size {
+                window_attributes = window_attributes.with_inner_size(
+                    winit::dpi::LogicalSize::new(size.x as f64, size.y as f64),
+                );
+            }
+            if let Some(size) = vb.min_inner_size {
+                window_attributes = window_attributes.with_min_inner_size(
+                    winit::dpi::LogicalSize::new(size.x as f64, size.y as f64),
+                );
+            }
+            if let Some(size) = vb.max_inner_size {
+                window_attributes = window_attributes.with_max_inner_size(
+                    winit::dpi::LogicalSize::new(size.x as f64, size.y as f64),
+                );
+            }
+            if let Some(decorations) = vb.decorations {
+                window_attributes = window_attributes.with_decorations(decorations);
+            }
+            if let Some(resizable) = vb.resizable {
+                window_attributes = window_attributes.with_resizable(resizable);
+            }
+            if let Some(transparent) = vb.transparent {
+                window_attributes = window_attributes.with_transparent(transparent);
+            }
+        } else {
+            window_attributes = window_attributes.with_title("egui-ash");
+        }
+
         let window = event_loop.create_window(window_attributes).unwrap();
 
         let vulkan = self.vulkan.take().expect("VulkanContext already consumed");

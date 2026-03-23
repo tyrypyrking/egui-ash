@@ -258,10 +258,13 @@ impl EngineRenderer for ColorEngine {
     }
 
     fn destroy(&mut self) {
-        if let Some(device) = self.device.as_ref() {
+        if let Some(device) = self.device.take() {
             unsafe {
                 device.device_wait_idle().ok();
-                device.destroy_command_pool(self.command_pool, None);
+                if self.command_pool != vk::CommandPool::null() {
+                    device.destroy_command_pool(self.command_pool, None);
+                    self.command_pool = vk::CommandPool::null();
+                }
             }
         }
     }
@@ -431,20 +434,7 @@ fn create_vulkan_context() -> (VulkanContext, VulkanResources) {
             break;
         }
 
-        // Strategy 2: Find two separate graphics-capable families
-        let graphics_families: Vec<u32> = queue_families
-            .iter()
-            .enumerate()
-            .filter(|(_, qf)| qf.queue_flags.contains(vk::QueueFlags::GRAPHICS))
-            .map(|(i, _)| i as u32)
-            .collect();
-        if graphics_families.len() >= 2 {
-            chosen = Some((pd, graphics_families[0], 0, 0)); // different families, both at index 0
-            // We'll handle this in device creation below
-            break;
-        }
-
-        // Strategy 3: Single queue (fallback — same queue for host and engine)
+        // Fallback: Single queue (same queue for host and engine)
         for (i, qf) in queue_families.iter().enumerate() {
             if qf.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
                 chosen = Some((pd, i as u32, 0, 0));
@@ -556,9 +546,6 @@ fn main() -> ExitCode {
               ui_state: &mut UiState,
               engine_state: &EngineState,
               handle: &EngineHandle<ColorEngine>| {
-            // Publish color to engine each frame
-            ui_state.clear_color = clear_color;
-
             egui::SidePanel::left("controls")
                 .default_width(250.0)
                 .show(ctx, |ui| {
@@ -628,7 +615,7 @@ fn main() -> ExitCode {
                 ));
             });
 
-            // Update color from sliders (published above)
+            // Publish current color to engine
             ui_state.clear_color = clear_color;
         },
     )
