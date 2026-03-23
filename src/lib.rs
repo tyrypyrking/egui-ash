@@ -1,4 +1,5 @@
 mod allocator;
+pub mod types;
 mod app;
 pub mod event;
 mod integration;

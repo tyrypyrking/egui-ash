@@ -186,6 +186,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arc-swap"
+version = "1.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a07d1f37ff60921c83bdfc7407723bdefe89b44b98a9b772f225c8f9d67141a6"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -842,6 +851,7 @@ name = "egui-ash"
 version = "0.4.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "ash",
  "ash-window",
  "bytemuck",
@@ -852,7 +862,6 @@ dependencies = [
  "egui_extras",
  "egui_tiles",
  "glam",
- "gpu-allocator",
  "image",
  "log",
  "raw-window-handle",
@@ -1294,18 +1303,6 @@ name = "glam"
 version = "0.30.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19fc433e8437a212d1b6f1e68c7824af3aed907da60afa994e7f542d18d12aa9"
-
-[[package]]
-name = "gpu-allocator"
-version = "0.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c151a2a5ef800297b4e79efa4f4bec035c5f51d5ae587287c9b952bdf734cacd"
-dependencies = [
- "ash",
- "log",
- "presser",
- "thiserror 1.0.69",
-]
 
 [[package]]
 name = "half"
@@ -2273,12 +2270,6 @@ checksum = "b73949432f5e2a09657003c25bca5e19a0e9c84f8058ca374f49e0ebe605af77"
 dependencies = [
  "zerovec",
 ]
-
-[[package]]
-name = "presser"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
 
 [[package]]
 name = "prettyplease"
