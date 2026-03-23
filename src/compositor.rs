@@ -43,6 +43,9 @@ struct ManagedTexture {
 /// Size for vertex/index buffers (4 MiB each).
 const BUFFER_SIZE: vk::DeviceSize = 4 * 1024 * 1024;
 
+/// Reserved egui User texture ID for the engine viewport.
+const ENGINE_VIEWPORT_USER_ID: u64 = u64::MAX;
+
 /// The host-side compositing pipeline.
 ///
 /// Manages swapchain, egui texture upload, render pass, pipeline,
@@ -274,7 +277,7 @@ impl Compositor {
             &[],
         );
 
-        let engine_viewport_texture_id = egui::TextureId::User(u64::MAX);
+        let engine_viewport_texture_id = egui::TextureId::User(ENGINE_VIEWPORT_USER_ID);
 
         Self {
             instance: instance.clone(),
@@ -491,11 +494,12 @@ impl Compositor {
             )
             .expect("queue_submit failed");
 
-        // Present.
+        // Present — must only wait on binary semaphore (not timeline).
+        let present_wait = [self.render_finished_semaphores[self.current_frame]];
         let swapchains = [self.swapchain];
         let image_indices = [image_index as u32];
         let present_info = vk::PresentInfoKHR::default()
-            .wait_semaphores(&signal_semaphores)
+            .wait_semaphores(&present_wait)
             .swapchains(&swapchains)
             .image_indices(&image_indices);
         let result = self
@@ -1603,13 +1607,13 @@ impl Compositor {
                     )
                     .unwrap();
 
-                // Existing -> TRANSFER_DST
+                // Existing -> TRANSFER_DST (preserve contents!)
                 self.cmd_image_barrier(
                     cmd,
                     existing.image,
                     vk::AccessFlags::SHADER_READ,
                     vk::AccessFlags::TRANSFER_WRITE,
-                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     vk::PipelineStageFlags::FRAGMENT_SHADER,
                     vk::PipelineStageFlags::TRANSFER,
@@ -1738,7 +1742,9 @@ impl Compositor {
                 self.device.destroy_image_view(old.image_view, None);
                 self.device.destroy_image(old.image, None);
                 self.device.free_memory(old.memory, None);
-                // Descriptor set freed when pool is destroyed, or we could free it here.
+                self.device
+                    .free_descriptor_sets(self.egui_descriptor_pool, &[old.descriptor_set])
+                    .expect("free_descriptor_sets failed");
             }
 
             self.managed_textures.insert(
@@ -1849,7 +1855,7 @@ impl Compositor {
                     }
                 }
                 egui::TextureId::User(id) => {
-                    if id == u64::MAX {
+                    if id == ENGINE_VIEWPORT_USER_ID {
                         // Engine viewport
                         self.engine_viewport_descriptor_set
                     } else {
