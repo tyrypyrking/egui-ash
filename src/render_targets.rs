@@ -177,8 +177,20 @@ impl RenderTargetPool {
         self.format
     }
 
+    pub(crate) fn image(&self, index: usize) -> vk::Image {
+        self.images[index]
+    }
+
     pub(crate) fn image_view(&self, index: usize) -> vk::ImageView {
         self.image_views[index]
+    }
+
+    /// Advance the shared timeline counter and return the new value.
+    /// Used by the host compositor submit to signal the timeline after compositing,
+    /// so that the engine's next `RenderTarget::wait_value` is satisfied.
+    pub(crate) fn next_signal_value(&mut self) -> u64 {
+        self.timeline_value += 1;
+        self.timeline_value
     }
 
     pub(crate) unsafe fn destroy(&mut self) {

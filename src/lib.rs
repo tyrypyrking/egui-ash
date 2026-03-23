@@ -2,6 +2,7 @@ mod compositor;
 mod engine;
 mod engine_thread;
 pub mod event;
+mod host;
 mod mailbox;
 mod render_targets;
 mod state_exchange;
@@ -26,6 +27,7 @@ pub use raw_window_handle;
 // v2 public API
 pub use engine::*;
 pub use event::{EngineEvent, PointerButtons};
+pub use host::EngineHandle;
 pub use types::*;
 
 // v1 re-exports (will be removed in Task 9)
