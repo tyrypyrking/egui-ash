@@ -1,3 +1,4 @@
+mod compositor;
 mod engine;
 pub mod event;
 mod mailbox;
