@@ -62,3 +62,7 @@ glam = "0.30.10"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp"] }
 log = "0.4.29"
 tobj = "4.0.3"
+
+[[example]]
+name = "v2_simple"
+path = "examples/v2_simple/main.rs"
