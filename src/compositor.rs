@@ -379,6 +379,8 @@ impl Compositor {
         scale_factor: f32,
         screen_size: [u32; 2],
         clear_color: [f32; 4],
+        timeline: vk::Semaphore,
+        signal_value: u64,
     ) -> Result<(), vk::Result> {
         // Wait for the previous work at this frame index to finish.
         self.device
@@ -463,13 +465,24 @@ impl Compositor {
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let signal_semaphores = [self.render_finished_semaphores[self.current_frame]];
+        let signal_semaphores = [
+            self.render_finished_semaphores[self.current_frame],
+            timeline,
+        ];
         let cmd_bufs = [cmd];
+
+        // Timeline semaphore submit info: the first signal semaphore is binary
+        // (no timeline value), the second is the timeline semaphore.
+        let signal_values = [0, signal_value];
+        let mut timeline_info =
+            vk::TimelineSemaphoreSubmitInfo::default().signal_semaphore_values(&signal_values);
+
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(&wait_semaphores)
             .wait_dst_stage_mask(&wait_stages)
             .command_buffers(&cmd_bufs)
-            .signal_semaphores(&signal_semaphores);
+            .signal_semaphores(&signal_semaphores)
+            .push_next(&mut timeline_info);
         self.device
             .queue_submit(
                 self.host_queue,
@@ -1685,8 +1698,13 @@ impl Compositor {
                 self.device.destroy_image(texture_image, None);
                 self.device.destroy_image_view(texture_image_view, None);
                 self.device.free_memory(texture_memory, None);
+            } else {
+                // No existing texture for partial update — shouldn't happen.
+                // Clean up the temp resources we already created.
+                self.device.destroy_image(texture_image, None);
+                self.device.destroy_image_view(texture_image_view, None);
+                self.device.free_memory(texture_memory, None);
             }
-            // If no existing texture for partial update, just ignore (shouldn't happen).
         } else {
             // Full texture replacement.
             let descriptor_set = self
