@@ -191,8 +191,8 @@ impl MyAppCreator {
         }
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         {
-            extension_names.push(vk::KhrPortabilityEnumerationFn::name().as_ptr());
-            extension_names.push(vk::KhrGetPhysicalDeviceProperties2Fn::name().as_ptr());
+            extension_names.push(ash::khr::portability_enumeration::NAME.as_ptr());
+            extension_names.push(ash::khr::get_physical_device_properties2::NAME.as_ptr());
         }
         let create_flags = if cfg!(any(target_os = "macos", target_os = "ios")) {
             vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
