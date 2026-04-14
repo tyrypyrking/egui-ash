@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// redraw handler type.
-pub type RedrawHandler = Box<dyn FnOnce(winit::dpi::PhysicalSize<u32>, EguiCommand) + Send>;
+pub type RedrawHandler = Box<dyn FnOnce(winit::dpi::PhysicalSize<u32>, EguiCommand)>;
 
 /// return type of [`App::request_redraw`].
 pub enum HandleRedraw {
