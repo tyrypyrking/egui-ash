@@ -1,5 +1,5 @@
-use crate::types::{CompletedFrame, EngineContext, RenderTarget};
 use crate::event::EngineEvent;
+use crate::types::{CompletedFrame, EngineContext, RenderTarget};
 
 /// Trait implemented by the user's rendering engine.
 /// Runs on a dedicated thread spawned by the library.

@@ -52,11 +52,15 @@ const ENGINE_VIEWPORT_USER_ID: u64 = u64::MAX;
 /// per-frame command buffer recording, submission, and presentation.
 pub(crate) struct Compositor {
     // Vulkan handles (cloned from caller)
+    #[allow(dead_code)]
     instance: ash::Instance,
     device: ash::Device,
     physical_device: vk::PhysicalDevice,
     host_queue: vk::Queue,
     host_queue_family: u32,
+    /// Optional mutex serialising queue access — see VulkanContext::queue_mutex.
+    /// When `Some`, every queue_submit / queue_present acquires this first.
+    queue_mutex: Option<std::sync::Arc<std::sync::Mutex<()>>>,
     surface_loader: ash::khr::surface::Instance,
     swapchain_loader: ash::khr::swapchain::Device,
 
@@ -68,6 +72,12 @@ pub(crate) struct Compositor {
     swapchain_extent: vk::Extent2D,
     swapchain_format: vk::Format,
     present_mode: vk::PresentModeKHR,
+
+    /// Extent used when the driver reports `current_extent == u32::MAX`
+    /// (WM defers sizing to the client). The host updates this on every
+    /// `WindowEvent::Resized` so subsequent swapchain recreation picks the
+    /// real window size instead of a hard-coded fallback.
+    fallback_extent: vk::Extent2D,
 
     // Sync (one set per frame-in-flight; count == swapchain image count)
     image_available_semaphores: Vec<vk::Semaphore>,
@@ -112,6 +122,23 @@ pub(crate) struct Compositor {
     mem_props: vk::PhysicalDeviceMemoryProperties,
 }
 
+/// Outcome of a single `Compositor::render_frame` call.
+///
+/// Any `Ok(_)` value means the GPU submit succeeded and the requested
+/// `signal_value` will eventually be signaled on the compositor timeline —
+/// the caller must commit the value in the target pool. Only
+/// `Err(ERROR_OUT_OF_DATE_KHR)` indicates that no submit occurred and the
+/// caller must NOT commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FrameOutcome {
+    /// Submit + present succeeded.
+    Rendered,
+    /// Submit succeeded, but the swapchain is stale (present returned
+    /// `SUBOPTIMAL_KHR`/`ERROR_OUT_OF_DATE_KHR`, or the swapchain was flagged
+    /// suboptimal). Caller should recreate the swapchain on the next frame.
+    RenderedNeedsRebuild,
+}
+
 impl Compositor {
     // ─────────────────────────────────────────────────────────────────────
     // Construction
@@ -127,6 +154,8 @@ impl Compositor {
         host_queue_family: u32,
         surface: vk::SurfaceKHR,
         present_mode: vk::PresentModeKHR,
+        queue_mutex: Option<std::sync::Arc<std::sync::Mutex<()>>>,
+        fallback_extent: vk::Extent2D,
     ) -> Self {
         let surface_loader = ash::khr::surface::Instance::new(entry, instance);
         let swapchain_loader = ash::khr::swapchain::Device::new(instance, device);
@@ -134,15 +163,39 @@ impl Compositor {
         let mem_props = instance.get_physical_device_memory_properties(physical_device);
 
         // -- Descriptor set layout -----------------------------------------
+        //
+        // `UPDATE_AFTER_BIND` lets us mutate a descriptor set even when a
+        // command buffer that already bound and drew with it is still in
+        // the pending state. egui's managed-texture path does exactly that
+        // every time the font atlas or a user texture is reuploaded — last
+        // frame's CB is queued against a fence we haven't yet waited on,
+        // and we re-point the set at a freshly created image.
+        //
+        // `UPDATE_UNUSED_WHILE_PENDING` alone is insufficient: the binding
+        // is *used* (via cmd_bind_descriptor_sets + cmd_draw_indexed), not
+        // merely present-but-unused. Only `UPDATE_AFTER_BIND` covers the
+        // actively-bound case.
+        //
+        // Requirements (must be enabled at device creation — see VulkanContext docs):
+        //   - `descriptorBindingSampledImageUpdateAfterBind` (VK 1.2)
+        //   - `descriptorBindingUpdateUnusedWhilePending`    (VK 1.2)
+        //   - layout flag `UPDATE_AFTER_BIND_POOL`
+        //   - pool flag   `UPDATE_AFTER_BIND`
+        let bindings = [vk::DescriptorSetLayoutBinding::default()
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .binding(0)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+        let binding_flags = [vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
+            | vk::DescriptorBindingFlags::UPDATE_UNUSED_WHILE_PENDING];
+        let mut flags_info =
+            vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
         let egui_descriptor_set_layout = device
             .create_descriptor_set_layout(
-                &vk::DescriptorSetLayoutCreateInfo::default().bindings(std::slice::from_ref(
-                    &vk::DescriptorSetLayoutBinding::default()
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .descriptor_count(1)
-                        .binding(0)
-                        .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-                )),
+                &vk::DescriptorSetLayoutCreateInfo::default()
+                    .flags(vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL)
+                    .bindings(&bindings)
+                    .push_next(&mut flags_info),
                 None,
             )
             .expect("Failed to create descriptor set layout");
@@ -151,7 +204,10 @@ impl Compositor {
         let egui_descriptor_pool = device
             .create_descriptor_pool(
                 &vk::DescriptorPoolCreateInfo::default()
-                    .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
+                    .flags(
+                        vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET
+                            | vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND,
+                    )
                     .max_sets(1024)
                     .pool_sizes(std::slice::from_ref(
                         &vk::DescriptorPoolSize::default()
@@ -187,6 +243,7 @@ impl Compositor {
                 &surface_loader,
                 &swapchain_loader,
                 present_mode,
+                fallback_extent,
             );
         let swapchain_image_views =
             Self::create_image_views(device, &swapchain_images, swapchain_format);
@@ -203,8 +260,7 @@ impl Compositor {
         );
 
         // -- Pipeline ------------------------------------------------------
-        let egui_pipeline_layout =
-            Self::create_pipeline_layout(device, egui_descriptor_set_layout);
+        let egui_pipeline_layout = Self::create_pipeline_layout(device, egui_descriptor_set_layout);
         let egui_pipeline = Self::create_pipeline(device, render_pass, egui_pipeline_layout);
 
         // -- Command pool + buffers ----------------------------------------
@@ -232,13 +288,12 @@ impl Compositor {
             Self::create_sync_objects(device, frame_count);
 
         // -- Vertex / index buffers ----------------------------------------
-        let (vertex_buffers, vertex_buffer_memory, vertex_buffer_ptrs) =
-            Self::create_host_buffers(
-                device,
-                &mem_props,
-                vk::BufferUsageFlags::VERTEX_BUFFER,
-                frame_count,
-            );
+        let (vertex_buffers, vertex_buffer_memory, vertex_buffer_ptrs) = Self::create_host_buffers(
+            device,
+            &mem_props,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+            frame_count,
+        );
         let (index_buffers, index_buffer_memory, index_buffer_ptrs) = Self::create_host_buffers(
             device,
             &mem_props,
@@ -285,6 +340,7 @@ impl Compositor {
             physical_device,
             host_queue,
             host_queue_family,
+            queue_mutex,
             surface_loader,
             swapchain_loader,
 
@@ -295,6 +351,7 @@ impl Compositor {
             swapchain_extent,
             swapchain_format,
             present_mode,
+            fallback_extent,
 
             image_available_semaphores,
             render_finished_semaphores,
@@ -372,8 +429,11 @@ impl Compositor {
 
     /// Render one frame: update textures, record draw commands, submit, present.
     ///
-    /// Returns `Ok(())` on success. Returns `Err(ERROR_OUT_OF_DATE_KHR)` when the
-    /// swapchain is stale — the caller should call `recreate_swapchain` and retry.
+    /// `compositor_timeline` is signaled with `signal_value` as part of the
+    /// queue submit. Returns `Ok(FrameOutcome::_)` when the submit happened
+    /// (signal value committed) and `Err(ERROR_OUT_OF_DATE_KHR)` when the
+    /// submit was skipped because the swapchain is stale (signal NOT
+    /// committed — caller must not advance the pool's compositor counter).
     #[allow(clippy::too_many_arguments)]
     pub(crate) unsafe fn render_frame(
         &mut self,
@@ -382,9 +442,9 @@ impl Compositor {
         scale_factor: f32,
         screen_size: [u32; 2],
         clear_color: [f32; 4],
-        timeline: vk::Semaphore,
+        compositor_timeline: vk::Semaphore,
         signal_value: u64,
-    ) -> Result<(), vk::Result> {
+    ) -> Result<FrameOutcome, vk::Result> {
         // Wait for the previous work at this frame index to finish.
         self.device
             .wait_for_fences(
@@ -405,6 +465,8 @@ impl Compositor {
         ) {
             Ok(pair) => pair,
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                // No submit this frame — compositor_timeline is NOT signaled.
+                // Caller must not commit signal_value.
                 return Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
             }
             Err(e) => panic!("acquire_next_image failed: {:?}", e),
@@ -447,12 +509,7 @@ impl Compositor {
         );
 
         // Record egui draw commands.
-        self.record_egui_commands(
-            cmd,
-            &clipped_primitives,
-            scale_factor,
-            screen_size,
-        );
+        self.record_egui_commands(cmd, &clipped_primitives, scale_factor, screen_size);
 
         self.device.cmd_end_render_pass(cmd);
         self.device
@@ -468,31 +525,37 @@ impl Compositor {
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        // Signal both the binary render_finished (for queue_present) and the
+        // timeline compositor semaphore (for the engine to wait on next frame).
+        // Binary semaphores ignore the corresponding timeline value.
         let signal_semaphores = [
             self.render_finished_semaphores[self.current_frame],
-            timeline,
+            compositor_timeline,
         ];
+        let signal_values = [0u64, signal_value];
         let cmd_bufs = [cmd];
 
-        // Timeline semaphore submit info: the first signal semaphore is binary
-        // (no timeline value), the second is the timeline semaphore.
-        let signal_values = [0, signal_value];
-        let mut timeline_info =
-            vk::TimelineSemaphoreSubmitInfo::default().signal_semaphore_values(&signal_values);
-
+        let mut timeline_info = vk::TimelineSemaphoreSubmitInfo::default()
+            .signal_semaphore_values(&signal_values);
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(&wait_semaphores)
             .wait_dst_stage_mask(&wait_stages)
             .command_buffers(&cmd_bufs)
             .signal_semaphores(&signal_semaphores)
             .push_next(&mut timeline_info);
-        self.device
-            .queue_submit(
-                self.host_queue,
-                std::slice::from_ref(&submit_info),
-                self.in_flight_fences[self.current_frame],
-            )
-            .expect("queue_submit failed");
+        {
+            let _qlock = self
+                .queue_mutex
+                .as_ref()
+                .map(|m| m.lock().unwrap_or_else(|e| e.into_inner()));
+            self.device
+                .queue_submit(
+                    self.host_queue,
+                    std::slice::from_ref(&submit_info),
+                    self.in_flight_fences[self.current_frame],
+                )
+                .expect("queue_submit failed");
+        }
 
         // Present — must only wait on binary semaphore (not timeline).
         let present_wait = [self.render_finished_semaphores[self.current_frame]];
@@ -502,21 +565,24 @@ impl Compositor {
             .wait_semaphores(&present_wait)
             .swapchains(&swapchains)
             .image_indices(&image_indices);
+        let _qlock = self
+            .queue_mutex
+            .as_ref()
+            .map(|m| m.lock().unwrap_or_else(|e| e.into_inner()));
         let result = self
             .swapchain_loader
             .queue_present(self.host_queue, &present_info);
+        drop(_qlock);
+
+        self.current_frame = (self.current_frame + 1) % self.in_flight_fences.len();
+
         match result {
-            Ok(false) => {}
+            Ok(false) => Ok(FrameOutcome::Rendered),
             Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => {
-                self.current_frame =
-                    (self.current_frame + 1) % self.in_flight_fences.len();
-                return Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
+                Ok(FrameOutcome::RenderedNeedsRebuild)
             }
             Err(e) => panic!("queue_present failed: {:?}", e),
         }
-
-        self.current_frame = (self.current_frame + 1) % self.in_flight_fences.len();
-        Ok(())
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -575,6 +641,7 @@ impl Compositor {
                 &self.surface_loader,
                 &self.swapchain_loader,
                 self.present_mode,
+                self.fallback_extent,
             );
         self.swapchain = swapchain;
         self.swapchain_images = swapchain_images;
@@ -634,6 +701,13 @@ impl Compositor {
     }
 
     /// Current swapchain extent.
+    /// Update the fallback extent used when the driver lets the client pick
+    /// the swapchain size. Call this on every `WindowEvent::Resized` so the
+    /// next swapchain recreation tracks the real window dimensions.
+    pub(crate) fn set_fallback_extent(&mut self, extent: vk::Extent2D) {
+        self.fallback_extent = extent;
+    }
+
     pub(crate) fn swapchain_extent(&self) -> vk::Extent2D {
         self.swapchain_extent
     }
@@ -656,8 +730,7 @@ impl Compositor {
         }
 
         // Black image
-        self.device
-            .destroy_image_view(self.black_image_view, None);
+        self.device.destroy_image_view(self.black_image_view, None);
         self.device.destroy_image(self.black_image, None);
         self.device.free_memory(self.black_image_memory, None);
 
@@ -729,6 +802,7 @@ impl Compositor {
         surface_loader: &ash::khr::surface::Instance,
         swapchain_loader: &ash::khr::swapchain::Device,
         present_mode: vk::PresentModeKHR,
+        fallback_extent: vk::Extent2D,
     ) -> (vk::SwapchainKHR, Vec<vk::Image>, vk::Format, vk::Extent2D) {
         let caps = surface_loader
             .get_physical_device_surface_capabilities(physical_device, surface)
@@ -757,20 +831,32 @@ impl Compositor {
             .unwrap_or(vk::PresentModeKHR::FIFO);
 
         // Extent from surface capabilities.
+        //
+        // If the WM reports `u32::MAX` it's the sentinel "client picks any
+        // size". The previous fallback hard-coded 1280×720 which produced
+        // grossly under-sampled rendering on any normal-sized window (the
+        // compositor then upscales 1280×720 to e.g. 2528×1372 on present and
+        // everything looks blurry). We now clamp the caller-supplied
+        // `fallback_extent` — ideally the current `window.inner_size()` — to
+        // the driver's min/max so the swapchain matches the actual window.
         let extent = if caps.current_extent.width == u32::MAX {
-            // Window manager doesn't tell us — use min/max.
+            let w = fallback_extent
+                .width
+                .clamp(caps.min_image_extent.width, caps.max_image_extent.width);
+            let h = fallback_extent
+                .height
+                .clamp(caps.min_image_extent.height, caps.max_image_extent.height);
             vk::Extent2D {
-                width: caps
-                    .min_image_extent
-                    .width
-                    .max(caps.max_image_extent.width.min(1280)),
-                height: caps
-                    .min_image_extent
-                    .height
-                    .max(caps.max_image_extent.height.min(720)),
+                width: w.max(1),
+                height: h.max(1),
             }
         } else {
-            caps.current_extent
+            // Guard against zero-extent (e.g. minimized window) — Vulkan
+            // requires width and height >= 1 for swapchain creation.
+            vk::Extent2D {
+                width: caps.current_extent.width.max(1),
+                height: caps.current_extent.height.max(1),
+            }
         };
 
         // Image count: min + 1, clamped to max.
@@ -785,9 +871,7 @@ impl Compositor {
             .image_format(surface_format.format)
             .image_color_space(surface_format.color_space)
             .image_extent(extent)
-            .image_usage(
-                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST,
-            )
+            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
             .pre_transform(caps.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
@@ -986,10 +1070,9 @@ impl Compositor {
             .binding(0)
             .input_rate(vk::VertexInputRate::VERTEX)
             .stride(4 * std::mem::size_of::<f32>() as u32 + 4 * std::mem::size_of::<u8>() as u32)];
-        let vertex_input =
-            vk::PipelineVertexInputStateCreateInfo::default()
-                .vertex_attribute_descriptions(&attributes)
-                .vertex_binding_descriptions(&binding);
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_attribute_descriptions(&attributes)
+            .vertex_binding_descriptions(&binding);
 
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
@@ -1345,6 +1428,9 @@ impl Compositor {
 
         device.end_command_buffer(cmd).unwrap();
 
+        // NB: this helper is called only from `Compositor::new`, before the
+        // engine thread has been spawned — no concurrent queue access is
+        // possible yet, so no locking needed here.
         device
             .queue_submit(
                 queue,
@@ -1374,7 +1460,11 @@ impl Compositor {
         }
     }
 
-    unsafe fn update_texture(&mut self, texture_id: egui::TextureId, delta: egui::epaint::ImageDelta) {
+    unsafe fn update_texture(
+        &mut self,
+        texture_id: egui::TextureId,
+        delta: egui::epaint::ImageDelta,
+    ) {
         // Extract pixel data.
         let data: Vec<u8> = match &delta.image {
             egui::ImageData::Color(image) => {
@@ -1504,8 +1594,7 @@ impl Compositor {
         let cmd_pool = self
             .device
             .create_command_pool(
-                &vk::CommandPoolCreateInfo::default()
-                    .queue_family_index(self.host_queue_family),
+                &vk::CommandPoolCreateInfo::default().queue_family_index(self.host_queue_family),
                 None,
             )
             .unwrap();
@@ -1579,13 +1668,19 @@ impl Compositor {
         );
 
         self.device.end_command_buffer(cmd).unwrap();
-        self.device
-            .queue_submit(
-                self.host_queue,
-                &[vk::SubmitInfo::default().command_buffers(&[cmd])],
-                fence,
-            )
-            .unwrap();
+        {
+            let _qlock = self
+                .queue_mutex
+                .as_ref()
+                .map(|m| m.lock().unwrap_or_else(|e| e.into_inner()));
+            self.device
+                .queue_submit(
+                    self.host_queue,
+                    &[vk::SubmitInfo::default().command_buffers(&[cmd])],
+                    fence,
+                )
+                .unwrap();
+        }
         self.device
             .wait_for_fences(&[fence], true, u64::MAX)
             .unwrap();
@@ -1686,13 +1781,19 @@ impl Compositor {
                 );
 
                 self.device.end_command_buffer(cmd).unwrap();
-                self.device
-                    .queue_submit(
-                        self.host_queue,
-                        &[vk::SubmitInfo::default().command_buffers(&[cmd])],
-                        fence,
-                    )
-                    .unwrap();
+                {
+                    let _qlock = self
+                        .queue_mutex
+                        .as_ref()
+                        .map(|m| m.lock().unwrap_or_else(|e| e.into_inner()));
+                    self.device
+                        .queue_submit(
+                            self.host_queue,
+                            &[vk::SubmitInfo::default().command_buffers(&[cmd])],
+                            fence,
+                        )
+                        .unwrap();
+                }
                 self.device
                     .wait_for_fences(&[fence], true, u64::MAX)
                     .unwrap();
@@ -1784,11 +1885,8 @@ impl Compositor {
         let width_points = screen_size[0] as f32 / scale_factor;
         let height_points = screen_size[1] as f32 / scale_factor;
 
-        self.device.cmd_bind_pipeline(
-            cmd,
-            vk::PipelineBindPoint::GRAPHICS,
-            self.egui_pipeline,
-        );
+        self.device
+            .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.egui_pipeline);
         self.device.cmd_bind_vertex_buffers(
             cmd,
             0,
@@ -1846,10 +1944,7 @@ impl Compositor {
                     if let Some(tex) = self.managed_textures.get(&mesh.texture_id) {
                         tex.descriptor_set
                     } else {
-                        log::error!(
-                            "Missing managed texture: {:?}",
-                            mesh.texture_id
-                        );
+                        log::error!("Missing managed texture: {:?}", mesh.texture_id);
                         continue;
                     }
                 }
@@ -1858,10 +1953,7 @@ impl Compositor {
                         // Engine viewport
                         self.engine_viewport_descriptor_set
                     } else {
-                        log::error!(
-                            "Unknown user texture id: {}",
-                            id
-                        );
+                        log::error!("Unknown user texture id: {}", id);
                         continue;
                     }
                 }

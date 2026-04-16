@@ -21,11 +21,14 @@ unsafe extern "system" fn debug_callback(
     _user_data: *mut std::ffi::c_void,
 ) -> vk::Bool32 {
     let msg = CStr::from_ptr((*data).p_message);
-    match severity {
-        vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => eprintln!("[VK ERROR] {:?}", msg),
-        vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => eprintln!("[VK WARN]  {:?}", msg),
-        _ => {}
-    }
+    let tag = match severity {
+        vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => "VK ERROR",
+        vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => "VK WARN ",
+        vk::DebugUtilsMessageSeverityFlagsEXT::INFO => "VK INFO ",
+        vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => "VK DBG  ",
+        _ => "VK ?    ",
+    };
+    eprintln!("[{}] {:?}", tag, msg);
     vk::FALSE
 }
 
@@ -143,17 +146,23 @@ pub fn create_vulkan_context(app_name: &str) -> (VulkanContext, VulkanResources)
             .expect("failed to enumerate physical devices")
     };
 
+    // Two-pass GPU selection:
+    //   1. Prefer a graphics family with 2+ queues (separate host/engine).
+    //   2. Fall back to a single graphics queue shared via queue_mutex.
     let mut chosen: Option<(vk::PhysicalDevice, u32, u32, u32)> = None;
+    let mut fallback: Option<(vk::PhysicalDevice, u32)> = None;
 
     for &pd in &physical_devices {
-        let queue_families =
-            unsafe { instance.get_physical_device_queue_family_properties(pd) };
+        let queue_families = unsafe { instance.get_physical_device_queue_family_properties(pd) };
 
-        // Find a graphics family with 2+ queues
         for (i, qf) in queue_families.iter().enumerate() {
-            if qf.queue_flags.contains(vk::QueueFlags::GRAPHICS) && qf.queue_count >= 2 {
-                chosen = Some((pd, i as u32, 0, 1));
-                break;
+            if qf.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
+                if qf.queue_count >= 2 {
+                    chosen = Some((pd, i as u32, 0, 1));
+                    break;
+                } else if fallback.is_none() {
+                    fallback = Some((pd, i as u32));
+                }
             }
         }
         if chosen.is_some() {
@@ -161,15 +170,31 @@ pub fn create_vulkan_context(app_name: &str) -> (VulkanContext, VulkanResources)
         }
     }
 
-    let (physical_device, queue_family, host_queue_idx, engine_queue_idx) = chosen
-        .expect("no GPU found with a graphics queue family supporting 2+ queues");
+    let (physical_device, queue_family, host_queue_idx, engine_queue_idx) = if let Some(c) = chosen
+    {
+        c
+    } else if let Some((pd, family)) = fallback {
+        // Single queue — both host and engine share queue index 0.
+        (pd, family, 0, 0)
+    } else {
+        panic!("no GPU found with a graphics queue family");
+    };
+
+    let shared_queue = host_queue_idx == engine_queue_idx;
 
     let props = unsafe { instance.get_physical_device_properties(physical_device) };
     let device_name = unsafe { CStr::from_ptr(props.device_name.as_ptr()) };
-    eprintln!(
-        "Selected GPU: {:?} (family={}, host_q={}, engine_q={})",
-        device_name, queue_family, host_queue_idx, engine_queue_idx
-    );
+    if shared_queue {
+        eprintln!(
+            "Selected GPU: {:?} (family={}, shared queue={})",
+            device_name, queue_family, host_queue_idx
+        );
+    } else {
+        eprintln!(
+            "Selected GPU: {:?} (family={}, host_q={}, engine_q={})",
+            device_name, queue_family, host_queue_idx, engine_queue_idx
+        );
+    }
 
     // -- Device --
     let queue_count = if host_queue_idx == engine_queue_idx {
@@ -186,8 +211,10 @@ pub fn create_vulkan_context(app_name: &str) -> (VulkanContext, VulkanResources)
     let device_extensions = [ash::khr::swapchain::NAME.as_ptr()];
 
     // Enable Vulkan 1.2 features (timeline semaphores) + 1.3 features (synchronization2)
-    let mut vulkan_12_features =
-        vk::PhysicalDeviceVulkan12Features::default().timeline_semaphore(true);
+    let mut vulkan_12_features = vk::PhysicalDeviceVulkan12Features::default()
+        .timeline_semaphore(true)
+        .descriptor_binding_sampled_image_update_after_bind(true)
+        .descriptor_binding_update_unused_while_pending(true);
     let mut vulkan_13_features = vk::PhysicalDeviceVulkan13Features::default()
         .synchronization2(true)
         .dynamic_rendering(true);
@@ -207,6 +234,12 @@ pub fn create_vulkan_context(app_name: &str) -> (VulkanContext, VulkanResources)
     let host_queue = unsafe { device.get_device_queue(queue_family, host_queue_idx) };
     let engine_queue = unsafe { device.get_device_queue(queue_family, engine_queue_idx) };
 
+    let queue_mutex = if shared_queue {
+        Some(std::sync::Arc::new(std::sync::Mutex::new(())))
+    } else {
+        None
+    };
+
     let vulkan_context = VulkanContext {
         entry,
         instance: instance.clone(),
@@ -216,6 +249,7 @@ pub fn create_vulkan_context(app_name: &str) -> (VulkanContext, VulkanResources)
         host_queue_family_index: queue_family,
         engine_queue,
         engine_queue_family_index: queue_family,
+        queue_mutex,
     };
 
     let resources = VulkanResources {

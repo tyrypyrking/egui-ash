@@ -144,6 +144,7 @@ impl<E: EngineRenderer> Host<E> {
         .expect("failed to create surface");
 
         // Create compositor
+        let initial_inner = window.inner_size();
         let compositor = Compositor::new(
             &vulkan.entry,
             &vulkan.instance,
@@ -153,6 +154,11 @@ impl<E: EngineRenderer> Host<E> {
             vulkan.host_queue_family_index,
             surface,
             options.present_mode,
+            vulkan.queue_mutex.clone(),
+            vk::Extent2D {
+                width: initial_inner.width,
+                height: initial_inner.height,
+            },
         );
 
         // Create render target pool
@@ -189,6 +195,7 @@ impl<E: EngineRenderer> Host<E> {
             queue_family_index: vulkan.engine_queue_family_index,
             initial_extent: extent,
             format,
+            queue_mutex: vulkan.queue_mutex.clone(),
         };
 
         // Spawn engine thread
@@ -267,9 +274,9 @@ impl<E: EngineRenderer> Host<E> {
     ) {
         // ── 1. Check for new engine frame ──────────────────────────────────
         if let Some(completed) = self.frame_rx.try_recv() {
-            // CPU-wait on the timeline semaphore for the engine's signal_value.
+            // CPU-wait on the engine timeline for the engine's signal_value.
             // This ensures the GPU has finished rendering into this target.
-            let semaphores = [self.render_target_pool.timeline()];
+            let semaphores = [self.render_target_pool.engine_timeline()];
             let values = [completed.signal_value];
             let wait_info = vk::SemaphoreWaitInfo::default()
                 .semaphores(&semaphores)
@@ -291,13 +298,22 @@ impl<E: EngineRenderer> Host<E> {
             self.compositor
                 .set_engine_viewport(self.render_target_pool.image_view(finished_index));
 
-            // Reclaim the previously composited target (if any) and send it back
-            // to the engine for reuse.
-            if let Some(prev_index) = self.composited_target_index {
-                let target = self.render_target_pool.make_target(prev_index);
-                // If send fails, the engine thread has exited — that's fine.
-                let _ = self.target_tx.send(target);
-            }
+            // Send the next render target to the engine.
+            // - Normal case: reclaim the previously composited target.
+            // - First frame: no previous target exists, send the other pool slot.
+            let send_index = if let Some(prev) = self.composited_target_index {
+                prev
+            } else {
+                // First engine frame — the other target is free.
+                if finished_index == 0 {
+                    1
+                } else {
+                    0
+                }
+            };
+            let target = self.render_target_pool.make_target(send_index);
+            // If send fails, the engine thread has exited — that's fine.
+            let _ = self.target_tx.send(target);
 
             // Track: the newly composited target is the one the engine just finished.
             // The engine target index is now "none" (it will get a new one when we
@@ -352,7 +368,13 @@ impl<E: EngineRenderer> Host<E> {
         let raw_input = self.egui_winit_state.take_egui_input(&self.window);
 
         let full_output = self.context.run(raw_input, |ctx| {
-            ui(ctx, &engine_status, &mut self.ui_state, &engine_state, &self.engine_handle);
+            ui(
+                ctx,
+                &engine_status,
+                &mut self.ui_state,
+                &engine_state,
+                &self.engine_handle,
+            );
         });
 
         let egui::FullOutput {
@@ -375,14 +397,34 @@ impl<E: EngineRenderer> Host<E> {
         }
 
         // ── 8. Tessellate and composite ────────────────────────────────────
+        //
+        // `screen_size` must be the *actual* swapchain image dimensions, not
+        // `window.inner_size()`. On Wayland (and some X11/driver combinations)
+        // `VkSurfaceCapabilitiesKHR::currentExtent` comes back in logical
+        // pixels, so the swapchain is created smaller than the window's
+        // physical inner size. If we kept using `window.inner_size()` here
+        // the Vulkan viewport would overshoot the framebuffer — content
+        // squeezed into the left half of the screen and the cursor offset
+        // from the visible UI (classic mismatch between rasteriser extent
+        // and framebuffer extent).
+        //
+        // `scale_factor` = physical swapchain pixels per egui point.
+        // The compositor divides screen_size by it to get `width_points`
+        // for the vertex shader push constant, and multiplies scissor rects
+        // by it to convert points to pixels. We derive it from the ratio of
+        // swapchain extent (pixels) to egui's viewport rect (points).
+        // viewport_rect() already incorporates zoom_factor via
+        // pixels_per_point, so no extra zoom multiplication is needed.
         let clipped_primitives = self.context.tessellate(shapes, pixels_per_point);
-        let size = self.window.inner_size();
-        let screen_size = [size.width, size.height];
-        let scale_factor = self.window.scale_factor() as f32 * self.context.zoom_factor();
+        let sc_extent = self.compositor.swapchain_extent();
+        let screen_size = [sc_extent.width, sc_extent.height];
+        let egui_screen = self.context.viewport_rect();
+        let w_points = egui_screen.width().max(1.0);
+        let scale_factor = sc_extent.width as f32 / w_points;
 
-        // Advance the shared timeline so the compositor signals a value
-        // that the engine can later wait on.
-        let signal_value = self.render_target_pool.next_signal_value();
+        // Peek the compositor signal value; only commit it after the submit
+        // succeeds so a failed frame does not strand any engine waiter.
+        let signal_value = self.render_target_pool.next_compositor_signal_value();
 
         let result = self.compositor.render_frame(
             clipped_primitives,
@@ -390,13 +432,28 @@ impl<E: EngineRenderer> Host<E> {
             scale_factor,
             screen_size,
             self.clear_color,
-            self.render_target_pool.timeline(),
+            self.render_target_pool.compositor_timeline(),
             signal_value,
         );
 
-        // ── 9. Handle swapchain out of date ────────────────────────────────
-        if let Err(vk::Result::ERROR_OUT_OF_DATE_KHR) = result {
-            self.compositor.recreate_swapchain();
+        // ── 9. Commit signal value / handle swapchain rebuild ──────────────
+        match result {
+            Ok(crate::compositor::FrameOutcome::Rendered) => {
+                self.render_target_pool.commit_compositor_signal(signal_value);
+            }
+            Ok(crate::compositor::FrameOutcome::RenderedNeedsRebuild) => {
+                self.render_target_pool.commit_compositor_signal(signal_value);
+                self.compositor.recreate_swapchain();
+            }
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                // Acquire failed before submit — no signal was emitted. Do
+                // not commit; the engine's next target will still wait on
+                // the previously-committed value.
+                self.compositor.recreate_swapchain();
+            }
+            Err(e) => {
+                eprintln!("[egui-ash] render_frame failed: {:?}", e);
+            }
         }
 
         // ── 10. Request redraw ─────────────────────────────────────────────
@@ -410,9 +467,49 @@ impl<E: EngineRenderer> Host<E> {
         &mut self,
         event: &egui_winit::winit::event::WindowEvent,
     ) -> bool {
-        let response = self
-            .egui_winit_state
-            .on_window_event(&self.window, event);
+        // Track `Resized` and `ScaleFactorChanged` so the next swapchain
+        // recreation picks up the real window size. Without this, a driver
+        // that reports `currentExtent == u32::MAX` (seen on X11 + certain
+        // Mesa configurations, and on Wayland when the client is responsible
+        // for buffer sizing) would keep presenting at whatever fallback the
+        // previous frame chose and any window resize would visibly rescale
+        // a stale low-resolution framebuffer.
+        use egui_winit::winit::event::WindowEvent as WE;
+        match event {
+            WE::Resized(new_size) => {
+                // Skip zero-sized resizes (e.g. minimize on X11/Windows).
+                if new_size.width == 0 || new_size.height == 0 {
+                    return self
+                        .egui_winit_state
+                        .on_window_event(&self.window, event)
+                        .consumed;
+                }
+
+                let new_extent = vk::Extent2D {
+                    width: new_size.width,
+                    height: new_size.height,
+                };
+                self.compositor.set_fallback_extent(new_extent);
+
+                // Only force a rebuild if the swapchain extent actually changed.
+                // On drivers that report currentExtent == u32::MAX the frame
+                // loop won't get ERROR_OUT_OF_DATE_KHR, so we must rebuild here.
+                let current = self.compositor.swapchain_extent();
+                if current.width != new_extent.width || current.height != new_extent.height {
+                    unsafe {
+                        self.compositor.recreate_swapchain();
+                    }
+                }
+            }
+            WE::ScaleFactorChanged { .. } => {
+                // winit delivers a `Resized` event right after this with
+                // the new physical size, which is where we actually rebuild
+                // the swapchain — nothing extra to do here.
+            }
+            _ => {}
+        }
+
+        let response = self.egui_winit_state.on_window_event(&self.window, event);
         if response.repaint {
             self.window.request_redraw();
         }
@@ -445,12 +542,13 @@ impl<E: EngineRenderer> Host<E> {
             .device_wait_idle()
             .expect("device_wait_idle failed");
 
-        // 4. Destroy old render targets, create fresh ones.
-        self.render_target_pool.destroy();
-
+        // 4. Create fresh render targets, then destroy the old ones.
+        // Creating first prevents the driver from reusing the old timeline semaphore handles,
+        // which would cause the validation layer to report spurious signal-value errors on
+        // the first engine submit after restart.
         let extent = self.compositor.swapchain_extent();
         let format = vk::Format::B8G8R8A8_UNORM;
-        self.render_target_pool = RenderTargetPool::new(
+        let new_pool = RenderTargetPool::new(
             &self.vulkan.instance,
             &self.vulkan.device,
             self.vulkan.physical_device,
@@ -459,6 +557,8 @@ impl<E: EngineRenderer> Host<E> {
             self.vulkan.host_queue_family_index,
             self.vulkan.engine_queue_family_index,
         );
+        self.render_target_pool.destroy();
+        self.render_target_pool = new_pool;
 
         // 5. Reset compositor to black.
         self.compositor.set_engine_viewport_black();
@@ -484,6 +584,7 @@ impl<E: EngineRenderer> Host<E> {
             queue_family_index: self.vulkan.engine_queue_family_index,
             initial_extent: extent,
             format,
+            queue_mutex: self.vulkan.queue_mutex.clone(),
         };
         let engine_join = engine_thread::spawn_engine_thread(
             engine,

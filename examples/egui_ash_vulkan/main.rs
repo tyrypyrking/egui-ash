@@ -75,10 +75,7 @@ fn main() -> ExitCode {
                     ui.separator();
 
                     ui.label("Rotate");
-                    ui.add(egui::Slider::new(
-                        &mut ui_state.rotate_y,
-                        -180.0..=180.0,
-                    ));
+                    ui.add(egui::Slider::new(&mut ui_state.rotate_y, -180.0..=180.0));
                     ui.checkbox(&mut ui_state.auto_rotate, "Auto-rotate");
                     ui.separator();
 
@@ -114,10 +111,7 @@ fn main() -> ExitCode {
                     ui.separator();
 
                     ui.label("Rotate");
-                    ui.add(egui::Slider::new(
-                        &mut ui_state.rotate_y,
-                        -180.0..=180.0,
-                    ));
+                    ui.add(egui::Slider::new(&mut ui_state.rotate_y, -180.0..=180.0));
                     ui.checkbox(&mut ui_state.auto_rotate, "Auto-rotate");
                 });
 

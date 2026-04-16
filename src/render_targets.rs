@@ -5,8 +5,12 @@ pub(crate) struct RenderTargetPool {
     images: [vk::Image; 2],
     image_views: [vk::ImageView; 2],
     memory: [vk::DeviceMemory; 2],
-    timeline: vk::Semaphore,
-    timeline_value: u64,
+    // Engine signals this timeline after rendering a frame. Never CPU-signaled.
+    engine_timeline: vk::Semaphore,
+    // Compositor signals this timeline after sampling a slot. Never CPU-signaled.
+    compositor_timeline: vk::Semaphore,
+    engine_counter: u64,
+    compositor_counter: u64,
     extent: vk::Extent2D,
     format: vk::Format,
     host_queue_family: u32,
@@ -41,8 +45,8 @@ impl RenderTargetPool {
                 .tiling(vk::ImageTiling::OPTIMAL)
                 .usage(
                     vk::ImageUsageFlags::COLOR_ATTACHMENT
-                    | vk::ImageUsageFlags::SAMPLED
-                    | vk::ImageUsageFlags::TRANSFER_DST,
+                        | vk::ImageUsageFlags::SAMPLED
+                        | vk::ImageUsageFlags::TRANSFER_DST,
                 )
                 .sharing_mode(vk::SharingMode::EXCLUSIVE)
                 .initial_layout(vk::ImageLayout::UNDEFINED);
@@ -82,19 +86,25 @@ impl RenderTargetPool {
         let (img0, mem0, view0) = create_image(device);
         let (img1, mem1, view1) = create_image(device);
 
-        let mut timeline_info = vk::SemaphoreTypeCreateInfo::default()
-            .semaphore_type(vk::SemaphoreType::TIMELINE)
-            .initial_value(0);
-        let sem_info = vk::SemaphoreCreateInfo::default().push_next(&mut timeline_info);
-        let timeline = device.create_semaphore(&sem_info, None).unwrap();
+        let make_timeline = |dev: &ash::Device| -> vk::Semaphore {
+            let mut type_info = vk::SemaphoreTypeCreateInfo::default()
+                .semaphore_type(vk::SemaphoreType::TIMELINE)
+                .initial_value(0);
+            let sem_info = vk::SemaphoreCreateInfo::default().push_next(&mut type_info);
+            dev.create_semaphore(&sem_info, None).unwrap()
+        };
+        let engine_timeline = make_timeline(device);
+        let compositor_timeline = make_timeline(device);
 
         Self {
             device: device.clone(),
             images: [img0, img1],
             image_views: [view0, view1],
             memory: [mem0, mem1],
-            timeline,
-            timeline_value: 0,
+            engine_timeline,
+            compositor_timeline,
+            engine_counter: 0,
+            compositor_counter: 0,
             extent,
             format,
             host_queue_family,
@@ -104,9 +114,15 @@ impl RenderTargetPool {
     }
 
     pub(crate) fn make_target(&mut self, index: usize) -> crate::types::RenderTarget {
-        let wait_value = self.timeline_value;
-        self.timeline_value += 1;
-        let signal_value = self.timeline_value;
+        // Engine waits on the compositor's most recently committed signal.
+        // This guarantees the compositor has finished sampling this slot
+        // before the engine overwrites it. Initial value 0 makes the very
+        // first target wait trivially-satisfied.
+        let wait_value = self.compositor_counter;
+
+        // Engine signals the next monotone value on its own timeline.
+        self.engine_counter += 1;
+        let signal_value = self.engine_counter;
 
         let subresource_range = vk::ImageSubresourceRange {
             aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -157,16 +173,21 @@ impl RenderTargetPool {
             image_view: self.image_views[index],
             extent: self.extent,
             format: self.format,
-            timeline: self.timeline,
+            wait_semaphore: self.compositor_timeline,
             wait_value,
+            signal_semaphore: self.engine_timeline,
             signal_value,
             acquire_barrier,
             release_barrier,
         }
     }
 
-    pub(crate) fn timeline(&self) -> vk::Semaphore {
-        self.timeline
+    pub(crate) fn engine_timeline(&self) -> vk::Semaphore {
+        self.engine_timeline
+    }
+
+    pub(crate) fn compositor_timeline(&self) -> vk::Semaphore {
+        self.compositor_timeline
     }
 
     pub(crate) fn image(&self, index: usize) -> vk::Image {
@@ -177,12 +198,18 @@ impl RenderTargetPool {
         self.image_views[index]
     }
 
-    /// Advance the shared timeline counter and return the new value.
-    /// Used by the host compositor submit to signal the timeline after compositing,
-    /// so that the engine's next `RenderTarget::wait_value` is satisfied.
-    pub(crate) fn next_signal_value(&mut self) -> u64 {
-        self.timeline_value += 1;
-        self.timeline_value
+    /// Peek the value the compositor should signal on its next GPU submit.
+    /// Does not advance state — call `commit_compositor_signal` once the
+    /// submit has succeeded.
+    pub(crate) fn next_compositor_signal_value(&self) -> u64 {
+        self.compositor_counter + 1
+    }
+
+    /// Commit a compositor signal value once the GPU submit is in flight.
+    /// Must be called exactly once per successful submit.
+    pub(crate) fn commit_compositor_signal(&mut self, value: u64) {
+        debug_assert_eq!(value, self.compositor_counter + 1);
+        self.compositor_counter = value;
     }
 
     pub(crate) unsafe fn destroy(&mut self) {
@@ -195,7 +222,8 @@ impl RenderTargetPool {
         for &mem in &self.memory {
             self.device.free_memory(mem, None);
         }
-        self.device.destroy_semaphore(self.timeline, None);
+        self.device.destroy_semaphore(self.engine_timeline, None);
+        self.device.destroy_semaphore(self.compositor_timeline, None);
     }
 }
 

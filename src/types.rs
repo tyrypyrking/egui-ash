@@ -1,22 +1,48 @@
 use ash::vk;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// User-provided Vulkan context. The user creates all Vulkan objects
 /// before calling `run()` and destroys them after `run()` returns.
+///
+/// # Required Vulkan features
+///
+/// The device **must** be created with the following features enabled
+/// (all core in Vulkan 1.2):
+///
+/// - `VkPhysicalDeviceVulkan12Features::timelineSemaphore`
+/// - `VkPhysicalDeviceVulkan12Features::descriptorBindingSampledImageUpdateAfterBind`
+/// - `VkPhysicalDeviceVulkan12Features::descriptorBindingUpdateUnusedWhilePending`
+///
+/// These are used internally by the compositor for texture descriptor
+/// updates while previous frames are still in flight.
 pub struct VulkanContext {
     pub entry: ash::Entry,
     pub instance: ash::Instance,
     pub physical_device: vk::PhysicalDevice,
     pub device: ash::Device,
     /// Queue for host (egui rendering + compositing).
-    /// Must be a distinct VkQueue from `engine_queue` (concurrent unprotected access).
-    /// Can be from the same queue family (preferred) or different families.
+    /// Usually a distinct `VkQueue` from `engine_queue`; see `queue_mutex`
+    /// below for the single-queue-family fallback path.
     pub host_queue: vk::Queue,
     pub host_queue_family_index: u32,
     /// Queue for engine scene rendering (used from the engine thread).
-    /// Must be a distinct VkQueue from `host_queue`.
     pub engine_queue: vk::Queue,
     pub engine_queue_family_index: u32,
+    /// Optional mutex serialising access to `host_queue` / `engine_queue`.
+    ///
+    /// When the two queue handles are distinct (the normal case), set to
+    /// `None` — both threads can submit concurrently.
+    ///
+    /// When the underlying hardware only exposes a single graphics queue
+    /// (common on Intel integrated and AMD RADV on RDNA3), the caller is
+    /// forced to share one `VkQueue` between host and engine. In that case
+    /// callers must supply a shared `Arc<Mutex<()>>` here; egui-ash will
+    /// lock it around every `vkQueueSubmit` / `vkQueuePresentKHR` it makes,
+    /// and the engine thread is expected to lock the same mutex around its
+    /// own submits. That's enough to satisfy Vulkan's "host access to a
+    /// `VkQueue` must be externally synchronised" requirement.
+    pub queue_mutex: Option<Arc<Mutex<()>>>,
 }
 
 /// Context provided to the engine on its dedicated thread.
@@ -26,16 +52,28 @@ pub struct EngineContext {
     pub queue_family_index: u32,
     pub initial_extent: vk::Extent2D,
     pub format: vk::Format,
+    /// Optional mutex for serialising queue access when host and engine
+    /// share the same `VkQueue`. The engine **must** lock this around every
+    /// `vkQueueSubmit` / `vkQueueSubmit2` call. `None` when the queues are
+    /// distinct.
+    pub queue_mutex: Option<Arc<Mutex<()>>>,
 }
 
 /// A render target lent to the engine by the host.
+///
+/// The engine must wait on `wait_semaphore` for at least `wait_value` before
+/// writing to `image`, and must signal `signal_semaphore` with `signal_value`
+/// when its GPU work on `image` completes. `wait_semaphore` and
+/// `signal_semaphore` are distinct timelines — each has exactly one signaler
+/// (engine for `signal_semaphore`, host compositor for `wait_semaphore`).
 pub struct RenderTarget {
     pub image: vk::Image,
     pub image_view: vk::ImageView,
     pub extent: vk::Extent2D,
     pub format: vk::Format,
-    pub timeline: vk::Semaphore,
+    pub wait_semaphore: vk::Semaphore,
     pub wait_value: u64,
+    pub signal_semaphore: vk::Semaphore,
     pub signal_value: u64,
     pub(crate) acquire_barrier: Option<vk::ImageMemoryBarrier2<'static>>,
     pub(crate) release_barrier: Option<vk::ImageMemoryBarrier2<'static>>,
@@ -69,6 +107,7 @@ impl RenderTarget {
 pub struct CompletedFrame {
     pub(crate) image: vk::Image,
     pub(crate) signal_value: u64,
+    #[allow(dead_code)]
     pub(crate) release_barrier: Option<vk::ImageMemoryBarrier2<'static>>,
 }
 

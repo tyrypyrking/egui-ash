@@ -1,4 +1,4 @@
-use crate::triangle_engine::{TriangleEngineState, TriangleUiState};
+use crate::model_engine::{ModelEngineState, ModelUiState};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pane types
@@ -16,8 +16,8 @@ pub enum Pane {
 
 pub struct TreeBehavior<'a> {
     pub viewport_texture_id: egui::TextureId,
-    pub ui_state: &'a mut TriangleUiState,
-    pub engine_state: &'a TriangleEngineState,
+    pub ui_state: &'a mut ModelUiState,
+    pub engine_state: &'a ModelEngineState,
 }
 
 impl<'a> egui_tiles::Behavior<Pane> for TreeBehavior<'a> {

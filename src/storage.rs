@@ -1,3 +1,7 @@
+// Persistence is declared on RunOption but not yet wired into the v2 Host.
+// Keep the module intact so the API isn't broken when re-integrated.
+#![allow(dead_code)]
+
 use anyhow::Result;
 use egui_winit::WindowSettings;
 use std::{

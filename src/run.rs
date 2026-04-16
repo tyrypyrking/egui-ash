@@ -16,13 +16,8 @@ pub fn run<E: EngineRenderer>(
     vulkan: VulkanContext,
     engine: E,
     options: RunOption,
-    ui: impl FnMut(
-        &egui::Context,
-        &EngineStatus,
-        &mut E::UiState,
-        &E::EngineState,
-        &EngineHandle<E>,
-    ) + 'static,
+    ui: impl FnMut(&egui::Context, &EngineStatus, &mut E::UiState, &E::EngineState, &EngineHandle<E>)
+        + 'static,
 ) -> ExitCode {
     let _app_id: String = app_id.into();
     let event_loop = EventLoop::new().expect("Failed to create event loop");
@@ -58,13 +53,8 @@ struct AppState<E: EngineRenderer, F> {
 impl<E, F> ApplicationHandler for AppState<E, F>
 where
     E: EngineRenderer,
-    F: FnMut(
-        &egui::Context,
-        &EngineStatus,
-        &mut E::UiState,
-        &E::EngineState,
-        &EngineHandle<E>,
-    ) + 'static,
+    F: FnMut(&egui::Context, &EngineStatus, &mut E::UiState, &E::EngineState, &EngineHandle<E>)
+        + 'static,
 {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let mut window_attributes = WindowAttributes::default().with_visible(true);
@@ -74,9 +64,8 @@ where
                 window_attributes = window_attributes.with_title(title.clone());
             }
             if let Some(size) = vb.inner_size {
-                window_attributes = window_attributes.with_inner_size(
-                    winit::dpi::LogicalSize::new(size.x as f64, size.y as f64),
-                );
+                window_attributes = window_attributes
+                    .with_inner_size(winit::dpi::LogicalSize::new(size.x as f64, size.y as f64));
             }
             if let Some(size) = vb.min_inner_size {
                 window_attributes = window_attributes.with_min_inner_size(
@@ -133,6 +122,10 @@ where
             unsafe {
                 host.destroy();
             }
+            // Take the host so `about_to_wait` won't call `frame()` on
+            // the destroyed compositor (winit may fire one more
+            // `about_to_wait` after `exit()`).
+            self.host = None;
             self.exit_tx.send(ExitCode::SUCCESS).ok();
             event_loop.exit();
             return;

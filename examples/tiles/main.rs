@@ -1,4 +1,4 @@
-//! Tiled layout example using `egui_tiles` + `TriangleEngine`.
+//! Tiled layout example using `egui_tiles` + `ModelEngine`.
 //!
 //! Demonstrates:
 //! - Docked layout with Viewport, Properties, and Hello panes
@@ -16,14 +16,14 @@ use tree_behavior::TreeBehavior;
 mod common;
 use common::vkutils;
 
-#[path = "../common/triangle_engine.rs"]
-mod triangle_engine;
-use triangle_engine::{TriangleEngine, TriangleEngineState, TriangleUiState};
+#[path = "../common/model_engine.rs"]
+mod model_engine;
+use model_engine::{ModelEngine, ModelEngineState, ModelUiState};
 
 fn main() -> ExitCode {
     let (vulkan, _resources) = vkutils::create_vulkan_context("egui_ash_tiles");
 
-    let engine = TriangleEngine::new(vulkan.instance.clone(), vulkan.physical_device);
+    let engine = ModelEngine::new(&vulkan.instance, vulkan.physical_device);
 
     let options = egui_ash::RunOption {
         present_mode: vk::PresentModeKHR::FIFO,
@@ -47,9 +47,9 @@ fn main() -> ExitCode {
         options,
         move |ctx: &egui::Context,
               status: &egui_ash::EngineStatus,
-              ui_state: &mut TriangleUiState,
-              engine_state: &TriangleEngineState,
-              _handle: &egui_ash::EngineHandle<TriangleEngine>| {
+              ui_state: &mut ModelUiState,
+              engine_state: &ModelEngineState,
+              _handle: &egui_ash::EngineHandle<ModelEngine>| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let mut behavior = TreeBehavior {
                     viewport_texture_id: status.viewport_texture_id,

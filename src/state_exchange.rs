@@ -11,10 +11,7 @@ pub(crate) struct StateReader<T> {
 
 pub(crate) fn state_exchange<T: Default>() -> (StateWriter<T>, StateReader<T>) {
     let swap = Arc::new(ArcSwap::from_pointee(T::default()));
-    (
-        StateWriter { swap: swap.clone() },
-        StateReader { swap },
-    )
+    (StateWriter { swap: swap.clone() }, StateReader { swap })
 }
 
 impl<T> StateWriter<T> {

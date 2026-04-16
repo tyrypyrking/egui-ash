@@ -34,7 +34,11 @@ impl std::fmt::Debug for EngineEvent {
                 .field("position", position)
                 .field("buttons", buttons)
                 .finish(),
-            Self::Key { key, pressed, modifiers } => f
+            Self::Key {
+                key,
+                pressed,
+                modifiers,
+            } => f
                 .debug_struct("Key")
                 .field("key", key)
                 .field("pressed", pressed)

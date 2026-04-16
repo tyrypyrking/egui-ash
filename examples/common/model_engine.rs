@@ -1,8 +1,8 @@
-//! A reusable `TriangleEngine` that renders a rotating colored triangle.
+//! A reusable `ModelEngine` that renders the Suzanne model with Lambertian lighting.
 //!
-//! Uses the existing SPIR-V shaders at `examples/common/shaders/spv/triangle.{vert,frag}.spv`.
+//! Uses the existing SPIR-V shaders at `examples/common/shaders/spv/model.{vert,frag}.spv`.
 //! Demonstrates the v2 `EngineRenderer` trait with a real graphics pipeline
-//! (dynamic rendering, Vulkan 1.3).
+//! (dynamic rendering, Vulkan 1.3), depth testing, and OBJ mesh loading.
 
 #![allow(dead_code)]
 
@@ -14,36 +14,77 @@ use egui_ash::{CompletedFrame, EngineContext, EngineEvent, EngineRenderer, Rende
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
-pub struct TriangleUiState {
+pub struct ModelUiState {
     pub rotate_y: f32,
     pub auto_rotate: bool,
     pub bg_color: [f32; 3],
 }
 
-impl Default for TriangleUiState {
+impl Default for ModelUiState {
     fn default() -> Self {
         Self {
             rotate_y: 0.0,
             auto_rotate: true,
-            bg_color: [0.1, 0.1, 0.15],
+            bg_color: [0.0, 0.2, 0.4],
         }
     }
 }
 
 #[derive(Clone, Default)]
-pub struct TriangleEngineState {
+pub struct ModelEngineState {
     pub frame_count: u64,
     pub current_angle: f32,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TriangleEngine
+// OBJ loader
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub struct TriangleEngine {
-    // Pre-init fields (set in new(), used in init())
-    instance: ash::Instance,
-    physical_device: vk::PhysicalDevice,
+/// Parse a Wavefront OBJ string into an interleaved `[px, py, pz, nx, ny, nz, ...]` array.
+/// Handles `v//n` and `v/t/n` face formats. Returns the flattened vertex data.
+fn load_obj(src: &str) -> Vec<f32> {
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut normals: Vec<[f32; 3]> = Vec::new();
+    let mut vertices: Vec<f32> = Vec::new();
+
+    for line in src.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("vn ") {
+            let mut parts = rest.split_whitespace();
+            let x: f32 = parts.next().unwrap().parse().unwrap();
+            let y: f32 = parts.next().unwrap().parse().unwrap();
+            let z: f32 = parts.next().unwrap().parse().unwrap();
+            normals.push([x, y, z]);
+        } else if let Some(rest) = line.strip_prefix("v ") {
+            let mut parts = rest.split_whitespace();
+            let x: f32 = parts.next().unwrap().parse().unwrap();
+            let y: f32 = parts.next().unwrap().parse().unwrap();
+            let z: f32 = parts.next().unwrap().parse().unwrap();
+            positions.push([x, y, z]);
+        } else if let Some(rest) = line.strip_prefix("f ") {
+            let parts = rest.split_whitespace();
+            for token in parts {
+                // Handle v//n or v/t/n
+                let indices: Vec<&str> = token.split('/').collect();
+                let vi: usize = indices[0].parse::<usize>().unwrap() - 1;
+                let ni: usize = indices.last().unwrap().parse::<usize>().unwrap() - 1;
+                let p = positions[vi];
+                let n = normals[ni];
+                vertices.extend_from_slice(&[p[0], p[1], p[2], n[0], n[1], n[2]]);
+            }
+        }
+    }
+
+    vertices
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ModelEngine
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub struct ModelEngine {
+    // Pre-init: memory properties (queried from instance+physical_device before init)
+    mem_props: vk::PhysicalDeviceMemoryProperties,
 
     // Post-init fields (set in init())
     device: Option<ash::Device>,
@@ -64,6 +105,7 @@ pub struct TriangleEngine {
     // Vertex buffer
     vertex_buffer: vk::Buffer,
     vertex_buffer_memory: vk::DeviceMemory,
+    vertex_count: u32,
 
     // UBO
     ubo_buffer: vk::Buffer,
@@ -74,6 +116,11 @@ pub struct TriangleEngine {
     descriptor_pool: vk::DescriptorPool,
     descriptor_set: vk::DescriptorSet,
 
+    // Depth buffer
+    depth_image: vk::Image,
+    depth_memory: vk::DeviceMemory,
+    depth_view: vk::ImageView,
+
     // State
     frame_count: u64,
     current_angle: f32,
@@ -81,13 +128,13 @@ pub struct TriangleEngine {
 
 // Safety: All Vulkan handles are thread-safe when accessed from a single thread.
 // The engine runs on a single dedicated thread.
-unsafe impl Send for TriangleEngine {}
+unsafe impl Send for ModelEngine {}
 
-impl TriangleEngine {
-    pub fn new(instance: ash::Instance, physical_device: vk::PhysicalDevice) -> Self {
+impl ModelEngine {
+    pub fn new(instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> Self {
+        let mem_props = unsafe { instance.get_physical_device_memory_properties(physical_device) };
         Self {
-            instance,
-            physical_device,
+            mem_props,
             device: None,
             queue: vk::Queue::null(),
             queue_family_index: u32::MAX,
@@ -102,11 +149,15 @@ impl TriangleEngine {
             pipeline: vk::Pipeline::null(),
             vertex_buffer: vk::Buffer::null(),
             vertex_buffer_memory: vk::DeviceMemory::null(),
+            vertex_count: 0,
             ubo_buffer: vk::Buffer::null(),
             ubo_memory: vk::DeviceMemory::null(),
             ubo_mapped: std::ptr::null_mut(),
             descriptor_pool: vk::DescriptorPool::null(),
             descriptor_set: vk::DescriptorSet::null(),
+            depth_image: vk::Image::null(),
+            depth_memory: vk::DeviceMemory::null(),
+            depth_view: vk::ImageView::null(),
             frame_count: 0,
             current_angle: 0.0,
         }
@@ -125,9 +176,9 @@ impl TriangleEngine {
     }
 }
 
-impl EngineRenderer for TriangleEngine {
-    type UiState = TriangleUiState;
-    type EngineState = TriangleEngineState;
+impl EngineRenderer for ModelEngine {
+    type UiState = ModelUiState;
+    type EngineState = ModelEngineState;
 
     fn init(&mut self, ctx: EngineContext) {
         self.queue = ctx.queue;
@@ -135,10 +186,7 @@ impl EngineRenderer for TriangleEngine {
         self.queue_mutex = ctx.queue_mutex;
 
         let device = &ctx.device;
-        let mem_props = unsafe {
-            self.instance
-                .get_physical_device_memory_properties(self.physical_device)
-        };
+        let mem_props = &self.mem_props;
 
         // 1. Command pool + command buffer
         let pool_info = vk::CommandPoolCreateInfo::default()
@@ -168,8 +216,8 @@ impl EngineRenderer for TriangleEngine {
         };
 
         // 2. Load shaders
-        let vert_code = include_bytes!("shaders/spv/triangle.vert.spv");
-        let frag_code = include_bytes!("shaders/spv/triangle.frag.spv");
+        let vert_code = include_bytes!("shaders/spv/model.vert.spv");
+        let frag_code = include_bytes!("shaders/spv/model.frag.spv");
         self.vert_shader = Self::create_shader_module(device, vert_code);
         self.frag_shader = Self::create_shader_module(device, frag_code);
 
@@ -210,7 +258,7 @@ impl EngineRenderer for TriangleEngine {
                 .name(entry_point),
         ];
 
-        // Vertex input: stride 24 (6 floats), binding 0
+        // Vertex input: stride 24 (6 floats: pos + normal), binding 0
         let binding_descs = [vk::VertexInputBindingDescription {
             binding: 0,
             stride: 24, // 6 * sizeof(f32)
@@ -224,7 +272,7 @@ impl EngineRenderer for TriangleEngine {
                 format: vk::Format::R32G32B32_SFLOAT,
                 offset: 0,
             },
-            // location 1 = vec3 inColor at offset 12
+            // location 1 = vec3 inNormal at offset 12
             vk::VertexInputAttributeDescription {
                 location: 1,
                 binding: 0,
@@ -253,6 +301,11 @@ impl EngineRenderer for TriangleEngine {
         let multisample = vk::PipelineMultisampleStateCreateInfo::default()
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
+        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(true)
+            .depth_write_enable(true)
+            .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL);
+
         let color_blend_attachment = [vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
             .blend_enable(false)];
@@ -263,10 +316,11 @@ impl EngineRenderer for TriangleEngine {
         let dynamic_state =
             vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
-        // Dynamic rendering: color attachment format
+        // Dynamic rendering: color + depth attachment formats
         let color_formats = [ctx.format];
-        let mut rendering_info =
-            vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats);
+        let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
+            .color_attachment_formats(&color_formats)
+            .depth_attachment_format(vk::Format::D32_SFLOAT);
 
         let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
@@ -275,6 +329,7 @@ impl EngineRenderer for TriangleEngine {
             .viewport_state(&viewport_state)
             .rasterization_state(&rasterization)
             .multisample_state(&multisample)
+            .depth_stencil_state(&depth_stencil)
             .color_blend_state(&color_blend)
             .dynamic_state(&dynamic_state)
             .layout(self.pipeline_layout)
@@ -286,15 +341,11 @@ impl EngineRenderer for TriangleEngine {
                 .expect("failed to create graphics pipeline")[0]
         };
 
-        // 6. Vertex buffer (device-local, uploaded via staging)
-        #[rustfmt::skip]
-        let vertices: [f32; 18] = [
-            // pos              color
-             0.0,  0.5, 0.0,   1.0, 0.0, 0.0, // top, red
-             0.5, -0.5, 0.0,   0.0, 1.0, 0.0, // right, green
-            -0.5, -0.5, 0.0,   0.0, 0.0, 1.0, // left, blue
-        ];
-        let vertex_data_size = (vertices.len() * std::mem::size_of::<f32>()) as vk::DeviceSize;
+        // 6. Load OBJ and create vertex buffer (device-local, uploaded via staging)
+        let obj_src = include_str!("assets/suzanne.obj");
+        let vertex_data = load_obj(obj_src);
+        self.vertex_count = (vertex_data.len() / 6) as u32;
+        let vertex_data_size = (vertex_data.len() * std::mem::size_of::<f32>()) as vk::DeviceSize;
 
         // Staging buffer (HOST_VISIBLE)
         let staging_buf_info = vk::BufferCreateInfo::default()
@@ -308,7 +359,7 @@ impl EngineRenderer for TriangleEngine {
         };
         let staging_reqs = unsafe { device.get_buffer_memory_requirements(staging_buffer) };
         let staging_mem_type = find_memory_type(
-            &mem_props,
+            mem_props,
             staging_reqs.memory_type_bits,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
@@ -332,7 +383,7 @@ impl EngineRenderer for TriangleEngine {
                     vk::MemoryMapFlags::empty(),
                 )
                 .expect("failed to map staging memory") as *mut f32;
-            std::ptr::copy_nonoverlapping(vertices.as_ptr(), ptr, vertices.len());
+            std::ptr::copy_nonoverlapping(vertex_data.as_ptr(), ptr, vertex_data.len());
             device.unmap_memory(staging_memory);
         }
 
@@ -348,7 +399,7 @@ impl EngineRenderer for TriangleEngine {
         };
         let vb_reqs = unsafe { device.get_buffer_memory_requirements(self.vertex_buffer) };
         let vb_mem_type = find_memory_type(
-            &mem_props,
+            mem_props,
             vb_reqs.memory_type_bits,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         );
@@ -428,7 +479,7 @@ impl EngineRenderer for TriangleEngine {
         };
         let ubo_reqs = unsafe { device.get_buffer_memory_requirements(self.ubo_buffer) };
         let ubo_mem_type = find_memory_type(
-            &mem_props,
+            mem_props,
             ubo_reqs.memory_type_bits,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
@@ -488,6 +539,63 @@ impl EngineRenderer for TriangleEngine {
             device.update_descriptor_sets(&writes, &[]);
         }
 
+        // 10. Depth buffer (D32_SFLOAT)
+        let depth_image_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(vk::Format::D32_SFLOAT)
+            .extent(vk::Extent3D {
+                width: ctx.initial_extent.width,
+                height: ctx.initial_extent.height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED);
+        self.depth_image = unsafe {
+            device
+                .create_image(&depth_image_info, None)
+                .expect("failed to create depth image")
+        };
+        let depth_reqs = unsafe { device.get_image_memory_requirements(self.depth_image) };
+        let depth_mem_type = find_memory_type(
+            mem_props,
+            depth_reqs.memory_type_bits,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        );
+        let depth_alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(depth_reqs.size)
+            .memory_type_index(depth_mem_type);
+        self.depth_memory = unsafe {
+            device
+                .allocate_memory(&depth_alloc_info, None)
+                .expect("failed to allocate depth image memory")
+        };
+        unsafe {
+            device
+                .bind_image_memory(self.depth_image, self.depth_memory, 0)
+                .expect("failed to bind depth image memory");
+        }
+        let depth_view_info = vk::ImageViewCreateInfo::default()
+            .image(self.depth_image)
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .format(vk::Format::D32_SFLOAT)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::DEPTH,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+        self.depth_view = unsafe {
+            device
+                .create_image_view(&depth_view_info, None)
+                .expect("failed to create depth image view")
+        };
+
         self.device = Some(ctx.device);
     }
 
@@ -510,7 +618,7 @@ impl EngineRenderer for TriangleEngine {
         // Compute MVP matrices
         let aspect = target.extent.width as f32 / target.extent.height.max(1) as f32;
         let model = mat4_rotation_y(angle_rad);
-        let view = mat4_look_at([0.0, 0.0, 2.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        let view = mat4_look_at([0.0, 0.0, -3.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
         let proj = mat4_perspective(45.0_f32.to_radians(), aspect, 0.1, 100.0);
 
         // Write UBO (3 mat4s, column-major)
@@ -521,8 +629,16 @@ impl EngineRenderer for TriangleEngine {
             std::ptr::write(ptr.add(2), proj);
         }
 
-        let subresource_range = vk::ImageSubresourceRange {
+        let color_subresource_range = vk::ImageSubresourceRange {
             aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+
+        let depth_subresource_range = vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::DEPTH,
             base_mip_level: 0,
             level_count: 1,
             base_array_layer: 0,
@@ -548,7 +664,7 @@ impl EngineRenderer for TriangleEngine {
                 .begin_command_buffer(cmd, &begin_info)
                 .expect("failed to begin command buffer");
 
-            // Acquire barrier or UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL
+            // Acquire barrier or UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL (color target)
             if let Some(acquire) = target.acquire_barrier() {
                 let barriers = [*acquire];
                 let dep_info = vk::DependencyInfo::default().image_memory_barriers(&barriers);
@@ -564,8 +680,29 @@ impl EngineRenderer for TriangleEngine {
                     .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .image(target.image)
-                    .subresource_range(subresource_range);
+                    .subresource_range(color_subresource_range);
                 let barriers = [barrier];
+                let dep_info = vk::DependencyInfo::default().image_memory_barriers(&barriers);
+                device.cmd_pipeline_barrier2(cmd, &dep_info);
+            }
+
+            // Depth image: UNDEFINED -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+            {
+                let depth_barrier = vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::NONE)
+                    .src_access_mask(vk::AccessFlags2::NONE)
+                    .dst_stage_mask(vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS)
+                    .dst_access_mask(
+                        vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
+                            | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                    )
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(self.depth_image)
+                    .subresource_range(depth_subresource_range);
+                let barriers = [depth_barrier];
                 let dep_info = vk::DependencyInfo::default().image_memory_barriers(&barriers);
                 device.cmd_pipeline_barrier2(cmd, &dep_info);
             }
@@ -581,19 +718,32 @@ impl EngineRenderer for TriangleEngine {
                     ],
                 },
             };
+            let depth_clear_value = vk::ClearValue {
+                depth_stencil: vk::ClearDepthStencilValue {
+                    depth: 1.0,
+                    stencil: 0,
+                },
+            };
             let color_attachments = [vk::RenderingAttachmentInfo::default()
                 .image_view(target.image_view)
                 .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .load_op(vk::AttachmentLoadOp::CLEAR)
                 .store_op(vk::AttachmentStoreOp::STORE)
                 .clear_value(clear_value)];
+            let depth_attachment = vk::RenderingAttachmentInfo::default()
+                .image_view(self.depth_view)
+                .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .clear_value(depth_clear_value);
             let rendering_info = vk::RenderingInfo::default()
                 .render_area(vk::Rect2D {
                     offset: vk::Offset2D { x: 0, y: 0 },
                     extent: target.extent,
                 })
                 .layer_count(1)
-                .color_attachments(&color_attachments);
+                .color_attachments(&color_attachments)
+                .depth_attachment(&depth_attachment);
             device.cmd_begin_rendering(cmd, &rendering_info);
 
             // Set viewport and scissor
@@ -623,7 +773,7 @@ impl EngineRenderer for TriangleEngine {
                 &[],
             );
             device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer], &[0]);
-            device.cmd_draw(cmd, 3, 1, 0, 0);
+            device.cmd_draw(cmd, self.vertex_count, 1, 0, 0);
 
             device.cmd_end_rendering(cmd);
 
@@ -643,7 +793,7 @@ impl EngineRenderer for TriangleEngine {
                     .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .image(target.image)
-                    .subresource_range(subresource_range);
+                    .subresource_range(color_subresource_range);
                 let barriers = [barrier];
                 let dep_info = vk::DependencyInfo::default().image_memory_barriers(&barriers);
                 device.cmd_pipeline_barrier2(cmd, &dep_info);
@@ -653,7 +803,7 @@ impl EngineRenderer for TriangleEngine {
                 .end_command_buffer(cmd)
                 .expect("failed to end command buffer");
 
-            // Submit with timeline semaphore wait + signal (Vulkan 1.3 synchronization2)
+            // Wait on compositor timeline, signal engine timeline (sync2).
             let wait_semaphore_infos = [vk::SemaphoreSubmitInfo::default()
                 .semaphore(target.wait_semaphore)
                 .value(target.wait_value)
@@ -699,7 +849,7 @@ impl EngineRenderer for TriangleEngine {
     }
 }
 
-impl TriangleEngine {
+impl ModelEngine {
     unsafe fn cleanup_gpu_resources(&mut self, device: &ash::Device) {
         if self.pipeline != vk::Pipeline::null() {
             device.destroy_pipeline(self.pipeline, None);
@@ -738,6 +888,18 @@ impl TriangleEngine {
             device.free_memory(self.vertex_buffer_memory, None);
             self.vertex_buffer_memory = vk::DeviceMemory::null();
         }
+        if self.depth_view != vk::ImageView::null() {
+            device.destroy_image_view(self.depth_view, None);
+            self.depth_view = vk::ImageView::null();
+        }
+        if self.depth_image != vk::Image::null() {
+            device.destroy_image(self.depth_image, None);
+            self.depth_image = vk::Image::null();
+        }
+        if self.depth_memory != vk::DeviceMemory::null() {
+            device.free_memory(self.depth_memory, None);
+            self.depth_memory = vk::DeviceMemory::null();
+        }
         if self.vert_shader != vk::ShaderModule::null() {
             device.destroy_shader_module(self.vert_shader, None);
             self.vert_shader = vk::ShaderModule::null();
@@ -757,7 +919,7 @@ impl TriangleEngine {
     }
 }
 
-impl Drop for TriangleEngine {
+impl Drop for ModelEngine {
     fn drop(&mut self) {
         // Safety net: destroy GPU resources even after a panic.
         if let Some(device) = self.device.take() {
@@ -853,22 +1015,6 @@ fn mat4_perspective(fov_y_rad: f32, aspect: f32, near: f32, far: f32) -> [f32; 1
         0.0,         0.0,  far * range_inv,          -1.0,
         0.0,         0.0,  near * far * range_inv,    0.0,
     ];
-    m
-}
-
-/// Multiply two 4x4 matrices (column-major): result = a * b.
-#[allow(dead_code)]
-fn mat4_multiply(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
-    let mut m = [0.0_f32; 16];
-    for col in 0..4 {
-        for row in 0..4 {
-            let mut sum = 0.0;
-            for k in 0..4 {
-                sum += a[k * 4 + row] * b[col * 4 + k];
-            }
-            m[col * 4 + row] = sum;
-        }
-    }
     m
 }
 

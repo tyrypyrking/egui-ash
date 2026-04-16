@@ -58,18 +58,9 @@ fn main() -> ExitCode {
 
                     ui.label("Clear Color");
                     ui.color_edit_button_rgb(&mut clear_color);
-                    ui.add(
-                        egui::Slider::new(&mut clear_color[0], 0.0..=1.0)
-                            .text("R"),
-                    );
-                    ui.add(
-                        egui::Slider::new(&mut clear_color[1], 0.0..=1.0)
-                            .text("G"),
-                    );
-                    ui.add(
-                        egui::Slider::new(&mut clear_color[2], 0.0..=1.0)
-                            .text("B"),
-                    );
+                    ui.add(egui::Slider::new(&mut clear_color[0], 0.0..=1.0).text("R"));
+                    ui.add(egui::Slider::new(&mut clear_color[1], 0.0..=1.0).text("G"));
+                    ui.add(egui::Slider::new(&mut clear_color[2], 0.0..=1.0).text("B"));
 
                     ui.separator();
                     ui.heading("Engine Status");
@@ -89,17 +80,12 @@ fn main() -> ExitCode {
                         ui.label(format!("Last frame: {:.2}ms", ft.as_secs_f64() * 1000.0));
                     }
 
-                    ui.label(format!(
-                        "Engine frame count: {}",
-                        engine_state.frame_count
-                    ));
+                    ui.label(format!("Engine frame count: {}", engine_state.frame_count));
 
                     ui.separator();
 
                     // Crash test button
-                    if status.health.is_alive()
-                        && ui.button("Crash Engine").clicked()
-                    {
+                    if status.health.is_alive() && ui.button("Crash Engine").clicked() {
                         ui_state.should_crash = true;
                     }
 

@@ -21,7 +21,9 @@ pub(crate) fn mailbox() -> (MailboxSender, MailboxReceiver) {
         data: Mutex::new(None),
     });
     (
-        MailboxSender { slot: inner.clone() },
+        MailboxSender {
+            slot: inner.clone(),
+        },
         MailboxReceiver { slot: inner },
     )
 }
@@ -42,8 +44,8 @@ impl MailboxReceiver {
 
 // ── Target channel: bounded mpsc for RenderTarget ──
 
-pub(crate) use mpsc::SyncSender as TargetSender;
 pub(crate) use mpsc::Receiver as TargetReceiver;
+pub(crate) use mpsc::SyncSender as TargetSender;
 
 pub(crate) fn target_channel() -> (TargetSender<RenderTarget>, TargetReceiver<RenderTarget>) {
     mpsc::sync_channel(2)

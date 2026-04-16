@@ -36,6 +36,7 @@ impl EngineHealthState {
 }
 
 /// Spawn the engine thread. Returns the JoinHandle.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_engine_thread<E: EngineRenderer>(
     mut engine: E,
     ctx: EngineContext,
@@ -49,42 +50,40 @@ pub(crate) fn spawn_engine_thread<E: EngineRenderer>(
     std::thread::Builder::new()
         .name("egui-ash-engine".into())
         .spawn(move || {
-            let result =
-                std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    engine.init(ctx);
-                    health.health.store(HEALTH_RUNNING, Ordering::Release);
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                engine.init(ctx);
+                health.health.store(HEALTH_RUNNING, Ordering::Release);
 
-                    let mut engine_state = E::EngineState::default();
+                let mut engine_state = E::EngineState::default();
 
-                    while let Ok(target) = targets_rx.recv() {
-                        // Drain input events
-                        for event in events_rx.try_iter() {
-                            engine.handle_event(event);
-                        }
-
-                        // Read latest UI state
-                        let ui_state = ui_state_reader.read();
-
-                        let frame_start = Instant::now();
-                        let frame = engine.render(target, &ui_state, &mut engine_state);
-                        let frame_time = frame_start.elapsed();
-
-                        // Publish engine state
-                        engine_state_writer.publish(engine_state.clone());
-
-                        // Update stats
-                        health.frames_delivered.fetch_add(1, Ordering::Relaxed);
-                        health.last_frame_time_ns.store(
-                            frame_time.as_nanos() as u64,
-                            Ordering::Relaxed,
-                        );
-
-                        // Send completed frame
-                        frames_tx.send(frame);
+                while let Ok(target) = targets_rx.recv() {
+                    // Drain input events
+                    for event in events_rx.try_iter() {
+                        engine.handle_event(event);
                     }
 
-                    engine.destroy();
-                }));
+                    // Read latest UI state
+                    let ui_state = ui_state_reader.read();
+
+                    let frame_start = Instant::now();
+                    let frame = engine.render(target, &ui_state, &mut engine_state);
+                    let frame_time = frame_start.elapsed();
+
+                    // Publish engine state
+                    engine_state_writer.publish(engine_state.clone());
+
+                    // Update stats
+                    health.frames_delivered.fetch_add(1, Ordering::Relaxed);
+                    health
+                        .last_frame_time_ns
+                        .store(frame_time.as_nanos() as u64, Ordering::Relaxed);
+
+                    // Send completed frame
+                    frames_tx.send(frame);
+                }
+
+                engine.destroy();
+            }));
 
             match result {
                 Ok(()) => {

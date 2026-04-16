@@ -40,8 +40,10 @@ pub struct ColorEngine {
     device: Option<ash::Device>,
     queue: vk::Queue,
     queue_family_index: u32,
+    queue_mutex: Option<std::sync::Arc<std::sync::Mutex<()>>>,
     command_pool: vk::CommandPool,
     command_buffer: vk::CommandBuffer,
+    fence: vk::Fence,
     frame_count: u64,
 }
 
@@ -51,8 +53,10 @@ impl ColorEngine {
             device: None,
             queue: vk::Queue::null(),
             queue_family_index: u32::MAX,
+            queue_mutex: None,
             command_pool: vk::CommandPool::null(),
             command_buffer: vk::CommandBuffer::null(),
+            fence: vk::Fence::null(),
             frame_count: 0,
         }
     }
@@ -65,6 +69,7 @@ impl EngineRenderer for ColorEngine {
     fn init(&mut self, ctx: EngineContext) {
         self.queue = ctx.queue;
         self.queue_family_index = ctx.queue_family_index;
+        self.queue_mutex = ctx.queue_mutex;
 
         let pool_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
@@ -85,6 +90,13 @@ impl EngineRenderer for ColorEngine {
                 .expect("failed to allocate command buffer")[0];
             self.command_pool = pool;
             self.command_buffer = cmd;
+            self.fence = ctx
+                .device
+                .create_fence(
+                    &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
+                    None,
+                )
+                .expect("failed to create fence");
         }
 
         self.device = Some(ctx.device);
@@ -104,6 +116,14 @@ impl EngineRenderer for ColorEngine {
         let cmd = self.command_buffer;
 
         unsafe {
+            // Wait for the previous frame's GPU work to complete before reusing the command buffer.
+            device
+                .wait_for_fences(&[self.fence], true, u64::MAX)
+                .expect("failed to wait for fence");
+            device
+                .reset_fences(&[self.fence])
+                .expect("failed to reset fence");
+
             // Reset and begin command buffer
             device
                 .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
@@ -225,13 +245,13 @@ impl EngineRenderer for ColorEngine {
                 .end_command_buffer(cmd)
                 .expect("failed to end command buffer");
 
-            // Submit with timeline semaphore wait + signal
+            // Wait on compositor timeline, signal engine timeline.
             let wait_semaphore_infos = [vk::SemaphoreSubmitInfo::default()
-                .semaphore(target.timeline)
+                .semaphore(target.wait_semaphore)
                 .value(target.wait_value)
                 .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)];
             let signal_semaphore_infos = [vk::SemaphoreSubmitInfo::default()
-                .semaphore(target.timeline)
+                .semaphore(target.signal_semaphore)
                 .value(target.signal_value)
                 .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)];
             let cmd_buf_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(cmd)];
@@ -239,9 +259,15 @@ impl EngineRenderer for ColorEngine {
                 .wait_semaphore_infos(&wait_semaphore_infos)
                 .signal_semaphore_infos(&signal_semaphore_infos)
                 .command_buffer_infos(&cmd_buf_infos);
-            device
-                .queue_submit2(self.queue, &[submit_info], vk::Fence::null())
-                .expect("failed to submit command buffer");
+            {
+                let _qlock = self
+                    .queue_mutex
+                    .as_ref()
+                    .map(|m| m.lock().unwrap_or_else(|e| e.into_inner()));
+                device
+                    .queue_submit2(self.queue, &[submit_info], self.fence)
+                    .expect("failed to submit command buffer");
+            }
         }
 
         self.frame_count += 1;
@@ -258,6 +284,10 @@ impl EngineRenderer for ColorEngine {
         if let Some(device) = self.device.take() {
             unsafe {
                 device.device_wait_idle().ok();
+                if self.fence != vk::Fence::null() {
+                    device.destroy_fence(self.fence, None);
+                    self.fence = vk::Fence::null();
+                }
                 if self.command_pool != vk::CommandPool::null() {
                     device.destroy_command_pool(self.command_pool, None);
                     self.command_pool = vk::CommandPool::null();
@@ -273,6 +303,10 @@ impl Drop for ColorEngine {
         if let Some(device) = self.device.take() {
             unsafe {
                 device.device_wait_idle().ok();
+                if self.fence != vk::Fence::null() {
+                    device.destroy_fence(self.fence, None);
+                    self.fence = vk::Fence::null();
+                }
                 if self.command_pool != vk::CommandPool::null() {
                     device.destroy_command_pool(self.command_pool, None);
                     self.command_pool = vk::CommandPool::null();
