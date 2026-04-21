@@ -100,3 +100,69 @@ Cross-family correctness requires validation-layer testing to trust, and
 none of the current examples exercise the path. Shipping the alpha with an
 enforced-single-family restriction is honest and narrow; silently producing
 UB on a minority of hardware configurations would not be.
+
+---
+
+## 2. Managed textures (fonts, user textures) in non-root viewports
+
+### Status
+Multi-viewport rendering works (B9), but non-root viewports share the
+egui `Context` with ROOT while each compositor maintains its **own**
+managed-texture table. egui's `FullOutput::textures_delta` is consumed
+once per `context.run` call — by whichever compositor rendered that
+pass. That leaves other compositors' managed-texture tables empty
+for any `TextureId` they didn't personally handle.
+
+### What's missing
+Two symptoms users will see:
+
+- **Text / fonts may not render in pop-out windows.** On the first
+  frame where the user calls `show_viewport_immediate` /
+  `show_viewport_deferred`, ROOT's `context.run` has already
+  consumed the font-atlas `textures_delta`; the child compositor
+  never sees it. Subsequent frames' deltas are typically empty, so
+  the atlas never reaches the child compositor until
+  `Context::forget_all_images()` is called or fonts are changed.
+- **`ImageRegistry` user textures only render in ROOT.** The
+  `RegistryCommand` channel is consumed by ROOT's compositor; child
+  compositors receive a pre-closed dummy receiver per B9 decision
+  #8. Sampling a `UserTextureHandle::id()` inside a pop-out
+  produces "unknown user texture id" — renders as nothing.
+
+### What needs to happen to lift the restriction
+The underlying design question (tracked in the B9 sub-plan) is
+**per-compositor textures vs shared textures**. Two paths:
+
+1. **Broadcast all `textures_delta` to every compositor.** Each
+   compositor uploads its own copy of every texture. Easiest to
+   implement; wastes GPU memory (e.g. one font atlas per pop-out).
+   Requires extracting `Compositor::apply_texture_delta` as a public
+   method and calling it on every compositor for each `context.run`
+   delta, cloning the delta per call.
+2. **Shared-image / per-compositor-descriptor split.** Textures live
+   on `Host` as `vk::Image`/`vk::ImageView` handles; every compositor
+   allocates a local descriptor set pointing at those shared views.
+   Memory-optimal but refactors `Compositor::managed_textures` and
+   `Compositor::user_textures` into two pieces.
+
+### Impact of the current workaround
+- Pop-outs that don't use text or `ImageRegistry`-registered textures
+  render correctly today. The built-in `multi_viewports` example
+  deliberately stays in this box — every pop-out just shows the
+  engine viewport texture, which is fine because the engine viewport
+  uses a reserved descriptor slot per compositor (decision #2) that
+  IS populated.
+- Pop-outs that use text will show missing glyphs until a font
+  rebuild forces a full re-emit.
+
+### Effort estimate
+Path 1 (broadcast): ~2–3 hours. Path 2 (shared images): ~1 day.
+Revisit based on user reports; the broadcast approach is enough
+unless memory pressure surfaces.
+
+### Why this was deferred
+The B9 sub-plan explicitly punted this (decision #8). Shipping
+multi-viewport support alongside a narrow, documented texture
+limitation is more valuable than blocking B9 on the texture-sharing
+design question. File a bug with a specific use case if this hits
+you.

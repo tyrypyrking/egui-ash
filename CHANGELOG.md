@@ -44,6 +44,16 @@ app against the new `EngineRenderer` trait + UI closure model. See the
   (feature-gated on `persistence`), passed to the UI closure as its 6th
   argument.
 - Crate-level `//!` documentation and architecture diagram on docs.rs.
+- **Multi-viewport egui UI support (B9).**
+  `egui::Context::show_viewport_immediate` and
+  `egui::Context::show_viewport_deferred` now spawn real pop-out
+  windows, each with its own Vulkan surface, swapchain, and
+  egui-winit adapter. Engine viewport texture broadcasts to every
+  compositor (decision #2) so pop-outs render the engine scene too.
+  Viewport teardown runs through a fence-poll deferred-destruction
+  queue (decision #3) — closing a pop-out no longer stalls the main
+  thread. Immediate-viewport renderer uses a raw-pointer `HostPtr`
+  wrapper (decision #1) rather than `Arc<Mutex<>>`.
 
 ### Changed
 
@@ -83,10 +93,21 @@ app against the new `EngineRenderer` trait + UI closure model. See the
   at `Host::new`. Single-queue-family hardware (including single-queue Intel
   / AMD RADV) fully supported via `VulkanContext::queue_mutex`. See
   `docs/known-limitations.md`.
-- **Multi-viewport egui UI not yet restored.**
-  `egui::Window::show_viewport` / `show_viewport_immediate` are silently
-  ignored. Tracked in
-  `docs/superpowers/plans/2026-04-20-b9-multi-viewport.md`.
+- **Managed textures (fonts, user textures) in non-root viewports.**
+  egui's `textures_delta` is only applied to the compositor whose
+  `context.run` produced it, so newly-created child viewports can
+  start with an empty managed-texture table — text and egui-managed
+  images may render incorrectly in pop-outs until the next texture
+  refresh. Same class of issue as `ImageRegistry` textures being
+  ROOT-only (decision #8). Full broadcast-delta fix scheduled
+  post-alpha; see `docs/known-limitations.md`.
+- **Non-root viewports skipped by persistence.**
+  Window geometry is saved for ROOT only; pop-out positions don't
+  persist across launches. Decision #7 for this alpha; extends in a
+  later release.
+- **AccessKit wired on ROOT only.**
+  Screen readers see ROOT's egui widgets but not those inside
+  pop-outs. Decision #6 for this alpha.
 
 ### New required Vulkan 1.2 features
 
@@ -100,12 +121,11 @@ See `examples/common/vkutils.rs` for a reference device-creation flow.
 
 ### Examples
 
-Removed (covered v0.4 patterns that are retired): `multi_viewports`,
-`native_image`.
+Removed (covered v0.4 patterns that are retired): `native_image`.
 
 New / rewritten against v1 API: `v2_simple`, `egui_ash_simple`,
 `egui_ash_vulkan` (triangle engine), `images`, `scene_view` (model engine),
-`tiles`.
+`tiles`, `multi_viewports` (B9 pop-out demo).
 
 ## [0.4.0] - 2024-01-14
 ### Added

@@ -70,15 +70,23 @@
 //!
 //! # Known limitations (1.0.0-alpha)
 //!
-//! These are documented in `docs/known-limitations.md` and
-//! `docs/superpowers/plans/2026-04-20-v1-parity-restoration.md`:
+//! These are documented in `docs/known-limitations.md`:
 //!
 //! - **Single queue family only.** `host_queue_family_index` must equal
 //!   `engine_queue_family_index` until cross-family image ownership
 //!   transfer is wired up host-side.
-//! - **Multi-viewport egui UI not yet restored.** `egui::Window::show_viewport`
-//!   / `show_viewport_immediate` calls are silently ignored in this alpha;
-//!   see sub-plan `2026-04-20-b9-multi-viewport.md`.
+//! - **Managed textures (fonts / egui icons) in non-root viewports.**
+//!   egui's textures_delta is only applied to the compositor whose
+//!   `context.run` produced it, so pop-out windows created via
+//!   `show_viewport_immediate` / `show_viewport_deferred` can start
+//!   with an empty managed-texture table and render text incorrectly
+//!   until the atlas next refreshes. `ImageRegistry`-registered user
+//!   textures are similarly ROOT-only for the alpha. Broadcast-delta
+//!   fix scheduled post-alpha.
+//! - **Per-viewport persistence / AccessKit.** Window geometry and the
+//!   AccessKit adapter are wired on ROOT only; pop-out positions
+//!   don't persist across launches and screen readers don't see
+//!   pop-out widgets. Both are post-alpha items.
 //! - **Per-viewport custom rendering retired.** v1's `HandleRedraw::Handle`
 //!   pattern is intentionally gone — use [`EngineRenderer`] instead.
 
