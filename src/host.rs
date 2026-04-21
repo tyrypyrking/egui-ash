@@ -184,6 +184,14 @@ pub(crate) struct Host<E: EngineRenderer> {
     engine_target_index: Option<usize>,
     composited_target_index: Option<usize>,
 
+    // Current engine-viewport image view broadcast to every
+    // compositor's `engine_viewport_descriptor_set`. `None` means the
+    // compositors are showing their own black placeholder (engine has
+    // crashed, stopped, or not yet produced a frame). `Some(view)`
+    // means every compositor samples this view. Kept on Host so newly-
+    // created child viewports can be sync'd to the current state.
+    current_engine_view: Option<vk::ImageView>,
+
     // Persistent UI state (survives across frames)
     ui_state: E::UiState,
 
@@ -228,6 +236,52 @@ impl<E: EngineRenderer> Host<E> {
         self.viewports
             .get_mut(&egui::ViewportId::ROOT)
             .expect("ROOT viewport invariant violated")
+    }
+
+    /// Broadcast a new engine-viewport image view (or "show black") to
+    /// every compositor's `engine_viewport_descriptor_set`. Implements
+    /// B9 decision #2: all viewports sample the same engine image; one
+    /// `vkUpdateDescriptorSets` per compositor per new engine frame.
+    ///
+    /// Also updates `self.current_engine_view` so newly-created child
+    /// viewports (after this call) can be sync'd to the current state
+    /// via [`Self::sync_child_engine_viewport`].
+    ///
+    /// # Safety
+    /// `view`, when `Some`, must remain valid until the next call.
+    /// Caller is responsible for the engine-side fence handshake that
+    /// makes this sound (see `render_target_pool` / `engine_timeline`).
+    unsafe fn broadcast_engine_viewport(&mut self, view: Option<vk::ImageView>) {
+        self.current_engine_view = view;
+        for vp in self.viewports.values_mut() {
+            match view {
+                Some(v) => vp.compositor.set_engine_viewport(v),
+                None => vp.compositor.set_engine_viewport_black(),
+            }
+        }
+    }
+
+    /// Apply `self.current_engine_view` to a single viewport's compositor.
+    /// Called after creating a new child Viewport so it samples the
+    /// same engine image ROOT is seeing rather than its own black
+    /// placeholder.
+    ///
+    /// # Safety
+    /// Same as [`Self::broadcast_engine_viewport`] plus: `id` must be
+    /// present in `self.viewports`.
+    unsafe fn sync_child_engine_viewport(&mut self, id: egui::ViewportId) {
+        let current = self.current_engine_view;
+        let Some(vp) = self.viewports.get_mut(&id) else {
+            return;
+        };
+        match current {
+            Some(view) => vp.compositor.set_engine_viewport(view),
+            None => {
+                // Child compositor's `Compositor::new` already leaves
+                // the engine viewport pointed at its own black image;
+                // nothing to do.
+            }
+        }
     }
 
     /// Create a new Host, spawning the engine thread.
@@ -379,6 +433,7 @@ impl<E: EngineRenderer> Host<E> {
             engine_handle,
             engine_target_index: Some(0), // index 0 was sent to engine
             composited_target_index: None,
+            current_engine_view: None,
             ui_state: E::UiState::default(),
             clear_color: options.clear_color,
             _exit_tx: exit_tx,
@@ -438,8 +493,10 @@ impl<E: EngineRenderer> Host<E> {
 
             // Update ROOT compositor to sample this image. Non-root
             // compositors get the same update in step 8 (decision #2).
+            // Broadcast to all compositors so non-root viewports can
+            // render the engine texture too (B9 decision #2).
             let image_view = self.render_target_pool.image_view(finished_index);
-            self.root_mut().compositor.set_engine_viewport(image_view);
+            self.broadcast_engine_viewport(Some(image_view));
 
             // Send the next render target to the engine.
             let send_index = if let Some(prev) = self.composited_target_index {
@@ -463,7 +520,7 @@ impl<E: EngineRenderer> Host<E> {
         if (health_val == HEALTH_CRASHED || health_val == HEALTH_STOPPED)
             && self.composited_target_index.is_none()
         {
-            self.root_mut().compositor.set_engine_viewport_black();
+            self.broadcast_engine_viewport(None);
         }
 
         // ── 3. Build EngineStatus ──────────────────────────────────────────
@@ -739,6 +796,8 @@ impl<E: EngineRenderer> Host<E> {
                 let window_id = child.window.id();
                 self.viewports.insert(id, child);
                 self.window_id_to_viewport.insert(window_id, id);
+                // Sync to current engine image (B9 decision #2).
+                self.sync_child_engine_viewport(id);
             }
 
             // Take this viewport's raw input.
@@ -979,8 +1038,8 @@ impl<E: EngineRenderer> Host<E> {
         self.render_target_pool.destroy();
         self.render_target_pool = new_pool;
 
-        // 5. Reset compositor to black.
-        self.root_mut().compositor.set_engine_viewport_black();
+        // 5. Reset all compositors to black.
+        self.broadcast_engine_viewport(None);
 
         // 6. Create new channels.
         let (target_tx, target_rx) = mailbox::target_channel();
@@ -1146,6 +1205,10 @@ impl<E: EngineRenderer> Host<E> {
             let window_id = child.window.id();
             self.viewports.insert(id, child);
             self.window_id_to_viewport.insert(window_id, id);
+            // Point the new compositor at the current engine image so
+            // the engine viewport renders in this window too (B9
+            // decision #2).
+            self.sync_child_engine_viewport(id);
         }
 
         // Take this viewport's pending winit input.
