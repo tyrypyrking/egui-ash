@@ -245,7 +245,7 @@ where
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        _window_id: winit::window::WindowId,
+        window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
         let Some(host) = self.host.as_mut() else {
@@ -253,26 +253,34 @@ where
         };
 
         if matches!(event, winit::event::WindowEvent::CloseRequested) {
-            // SAFETY: `destroy()` tears down all Vulkan resources and must
-            // be called exactly once before the Host is dropped or reused.
-            // We invoke it here on CloseRequested (the terminal event) and
-            // immediately set `self.host = None` on the next line so no
-            // further method is called on the torn-down Host — winit may
-            // still deliver one more `about_to_wait` after `exit()`, and
-            // the `None` guard in `about_to_wait` bails out in that case.
-            unsafe {
-                host.destroy();
+            // ROOT close exits the app; non-root close targets that one
+            // viewport only — handled inside Host as part of the B9
+            // multi-viewport lifecycle (step 7 deferred-destruction queue).
+            if window_id == host.root_window_id() {
+                // SAFETY: `destroy()` tears down all Vulkan resources and
+                // must be called exactly once before the Host is dropped
+                // or reused. We invoke it here on CloseRequested (the
+                // terminal event) and immediately set `self.host = None`
+                // on the next line so no further method is called on the
+                // torn-down Host — winit may still deliver one more
+                // `about_to_wait` after `exit()`, and the `None` guard
+                // in `about_to_wait` bails out in that case.
+                unsafe {
+                    host.destroy();
+                }
+                self.host = None;
+                self.exit_tx.send(ExitCode::SUCCESS).ok();
+                event_loop.exit();
+                return;
             }
-            // Take the host so `about_to_wait` won't call `frame()` on
-            // the destroyed compositor (winit may fire one more
-            // `about_to_wait` after `exit()`).
-            self.host = None;
-            self.exit_tx.send(ExitCode::SUCCESS).ok();
-            event_loop.exit();
+            // Non-root CloseRequested: routed to Host for per-viewport
+            // teardown. At this step no non-root viewports exist yet, so
+            // the handler is a no-op. Wired properly in B9 step 7.
+            host.handle_window_event(window_id, &event);
             return;
         }
 
-        host.handle_window_event(&event);
+        host.handle_window_event(window_id, &event);
     }
 
     fn device_event(

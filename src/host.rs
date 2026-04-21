@@ -112,7 +112,6 @@ pub(crate) struct Host<E: EngineRenderer> {
     // Reverse index for routing winit WindowEvents by WindowId.
     // Populated when a viewport is created; pruned on close. Kept in
     // sync with `viewports` as a strict invariant.
-    #[allow(dead_code)]
     window_id_to_viewport: HashMap<WindowId, egui::ViewportId>,
 
     // Focused viewport — tracked so host-global operations can target
@@ -629,15 +628,29 @@ impl<E: EngineRenderer> Host<E> {
         }
     }
 
-    /// Handle a winit window event. Returns `true` if egui consumed the event.
-    ///
-    /// At this step (§B9 step 3) all events route to ROOT unconditionally.
-    /// Step 4 introduces WindowId-based routing that looks up the target
-    /// Viewport via `window_id_to_viewport`.
+    /// The OS window id of the ROOT viewport. Used by [`crate::run`] to
+    /// tell `CloseRequested` on ROOT (full-app exit) apart from
+    /// `CloseRequested` on a pop-out viewport (close that viewport only).
+    pub(crate) fn root_window_id(&self) -> WindowId {
+        self.root().window.id()
+    }
+
+    /// Handle a winit window event, dispatched to the Viewport whose
+    /// window matches `window_id`. Returns `true` if egui consumed the
+    /// event. Events for unknown windows (e.g. stale events delivered
+    /// after a viewport was destroyed) are silently ignored.
     pub(crate) fn handle_window_event(
         &mut self,
+        window_id: WindowId,
         event: &egui_winit::winit::event::WindowEvent,
     ) -> bool {
+        // Resolve target viewport. `copied()` releases the immutable
+        // borrow of `window_id_to_viewport` so we can take `&mut self`
+        // on `viewports` below.
+        let Some(viewport_id) = self.window_id_to_viewport.get(&window_id).copied() else {
+            return false;
+        };
+
         // Track `Resized` and `ScaleFactorChanged` so the next swapchain
         // recreation picks up the real window size. Without this, a driver
         // that reports `currentExtent == u32::MAX` (seen on X11 + certain
@@ -648,46 +661,54 @@ impl<E: EngineRenderer> Host<E> {
         use egui_winit::winit::event::WindowEvent as WE;
         match event {
             WE::Resized(new_size) => {
+                let vp = self
+                    .viewports
+                    .get_mut(&viewport_id)
+                    .expect("viewport map / window_id index out of sync");
+
                 // Skip zero-sized resizes (e.g. minimize on X11/Windows).
                 if new_size.width == 0 || new_size.height == 0 {
-                    let root = self.root_mut();
-                    return root.state.on_window_event(&root.window, event).consumed;
+                    return vp.state.on_window_event(&vp.window, event).consumed;
                 }
 
                 let new_extent = vk::Extent2D {
                     width: new_size.width,
                     height: new_size.height,
                 };
-                self.root_mut().compositor.set_fallback_extent(new_extent);
+                vp.compositor.set_fallback_extent(new_extent);
 
-                // Only force a rebuild if the swapchain extent actually changed.
-                // On drivers that report currentExtent == u32::MAX the frame
-                // loop won't get ERROR_OUT_OF_DATE_KHR, so we must rebuild here.
-                let current = self.root().compositor.swapchain_extent();
+                // Only force a rebuild if the swapchain extent actually
+                // changed. On drivers that report currentExtent == u32::MAX
+                // the frame loop won't get ERROR_OUT_OF_DATE_KHR, so we
+                // must rebuild here.
+                let current = vp.compositor.swapchain_extent();
                 if current.width != new_extent.width || current.height != new_extent.height {
                     // SAFETY: `recreate_swapchain` internally issues
-                    // `device_wait_idle` before destroying any resources, so
-                    // no in-flight command buffers reference the old
-                    // framebuffers, image views, or swapchain at the point of
-                    // destruction. Called from the single-threaded event loop,
-                    // so no concurrent submits are in progress.
+                    // `device_wait_idle` before destroying any resources,
+                    // so no in-flight command buffers reference the old
+                    // framebuffers, image views, or swapchain at the point
+                    // of destruction. Called from the single-threaded event
+                    // loop, so no concurrent submits are in progress.
                     unsafe {
-                        self.root_mut().compositor.recreate_swapchain();
+                        vp.compositor.recreate_swapchain();
                     }
                 }
             }
             WE::ScaleFactorChanged { .. } => {
-                // winit delivers a `Resized` event right after this with
-                // the new physical size, which is where we actually rebuild
-                // the swapchain — nothing extra to do here.
+                // winit delivers a `Resized` right after this with the new
+                // physical size, which is where we actually rebuild the
+                // swapchain — nothing extra to do here.
             }
             _ => {}
         }
 
-        let root = self.root_mut();
-        let response = root.state.on_window_event(&root.window, event);
+        let vp = self
+            .viewports
+            .get_mut(&viewport_id)
+            .expect("viewport map / window_id index out of sync");
+        let response = vp.state.on_window_event(&vp.window, event);
         if response.repaint {
-            root.window.request_redraw();
+            vp.window.request_redraw();
         }
         response.consumed
     }
