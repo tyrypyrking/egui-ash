@@ -91,7 +91,10 @@ struct AppState<E: EngineRenderer, F> {
     options: RunOption,
     engine: Option<E>,
     ui: F,
-    host: Option<Host<E>>,
+    // `Box<Host<E>>` — the box gives Host a stable heap address, which
+    // is required by the immediate-viewport renderer's raw-pointer
+    // capture (see `Host::install_immediate_viewport_renderer`).
+    host: Option<Box<Host<E>>>,
     exit_tx: std::sync::mpsc::Sender<ExitCode>,
     /// Held so `init_accesskit` can hand a proxy clone to egui-winit's
     /// adapter when the `accesskit` feature is enabled. Unused without
@@ -231,15 +234,30 @@ where
                 storage,
             )
         };
-        self.host = Some(host);
 
-        // Wire AccessKit adapter so egui widgets reach screen readers via
-        // the user_event channel. Must run after Host is stored because the
-        // adapter holds a reference to the window.
+        // Box the Host so the immediate-viewport renderer's captured
+        // pointer stays valid across the lifetime of this AppState. The
+        // Box's heap address is stable even as AppState is moved around
+        // by winit's `run_app`.
+        let mut boxed: Box<Host<E>> = Box::new(host);
+
+        // Wire AccessKit adapter so egui widgets reach screen readers
+        // via the user_event channel. Uses `&mut Box<Host<E>>` (auto-
+        // derefs to `&mut Host<E>` for the method call).
         #[cfg(feature = "accesskit")]
-        if let Some(host) = self.host.as_mut() {
-            host.init_accesskit(event_loop, self.event_loop_proxy.clone());
+        boxed.init_accesskit(event_loop, self.event_loop_proxy.clone());
+
+        // Install the immediate-viewport renderer now that `boxed` is
+        // on the heap. SAFETY: `ptr` references the Box's interior; the
+        // Box lives inside `self.host` from here on, and the renderer
+        // is uninstalled at the top of `Host::destroy` before the Box
+        // is dropped on the CloseRequested / programmatic-exit paths.
+        let ptr: *mut Host<E> = &mut *boxed;
+        unsafe {
+            Host::<E>::install_immediate_viewport_renderer(ptr);
         }
+
+        self.host = Some(boxed);
     }
 
     fn window_event(
@@ -331,7 +349,7 @@ where
         // `frame()` wraps unsafe Vulkan submit/present calls; called from
         // the event-loop thread, single-threaded per frame.
         unsafe {
-            host.frame(&mut self.ui);
+            host.frame(event_loop, &mut self.ui);
         }
 
         // Handle programmatic exit requested via `EngineHandle::exit` during

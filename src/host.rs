@@ -91,6 +91,32 @@ impl<E: EngineRenderer> EngineHandle<E> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// HostPtr — raw-pointer wrapper for egui's immediate-viewport renderer
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Raw-pointer wrapper used to pass `*mut Host<E>` through egui's
+/// `Context::set_immediate_viewport_renderer`, which requires an owned
+/// `'static` closure.
+///
+/// The renderer callback is a `Fn + 'static`, but egui's
+/// `IMMEDIATE_VIEWPORT_RENDERER` thread-local does NOT require the
+/// callback to be `Send + Sync` (it's strictly main-thread-accessed).
+/// So this wrapper stays safe-to-construct; the unsafety lives entirely
+/// at the single call site in [`Host::install_immediate_viewport_renderer`].
+///
+/// See that method's safety invariant for the lifetime / pinning rules
+/// that make dereferencing `HostPtr::0` sound inside the closure.
+struct HostPtr<E: EngineRenderer>(*mut Host<E>);
+
+impl<E: EngineRenderer> Clone for HostPtr<E> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<E: EngineRenderer> Copy for HostPtr<E> {}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Host — internal orchestrator
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -102,6 +128,21 @@ pub(crate) struct Host<E: EngineRenderer> {
 
     // Shared egui context — one per Host, shared across all viewports.
     context: egui::Context,
+
+    // Swapchain present mode — captured from RunOption for child
+    // viewport creation (immediate and deferred viewports inherit the
+    // ROOT's present mode for the alpha; per-viewport overrides are a
+    // post-alpha feature).
+    present_mode: vk::PresentModeKHR,
+
+    // Pointer to the `&ActiveEventLoop` currently driving a
+    // `context.run(...)` call. Set by [`Host::frame`] at the start of
+    // every frame, cleared at the end. Non-null only during egui's
+    // run phase on the main thread. The immediate-viewport renderer
+    // reads this to create child windows — winit only allows window
+    // creation from inside `ApplicationHandler` methods, so we must
+    // smuggle the reference across `context.run()`.
+    active_event_loop: std::cell::Cell<*const egui_winit::winit::event_loop::ActiveEventLoop>,
 
     // Per-egui-viewport state: window + egui-winit adapter + compositor +
     // surface. ROOT is always present. Non-root entries appear/disappear
@@ -322,6 +363,8 @@ impl<E: EngineRenderer> Host<E> {
         Self {
             vulkan,
             context,
+            present_mode: options.present_mode,
+            active_event_loop: std::cell::Cell::new(std::ptr::null()),
             viewports,
             window_id_to_viewport,
             focused_viewport: Some(egui::ViewportId::ROOT),
@@ -353,10 +396,16 @@ impl<E: EngineRenderer> Host<E> {
 
     /// Run a single host frame: poll engine, run egui UI, composite, present.
     ///
+    /// `event_loop` is smuggled to the immediate-viewport renderer for
+    /// the duration of `context.run()` via [`Self::active_event_loop`] —
+    /// child windows must be created from an `ActiveEventLoop` context,
+    /// which is only reachable during `ApplicationHandler` callbacks.
+    ///
     /// # Safety
     /// Caller must ensure the Vulkan device and all handles are valid.
     pub(crate) unsafe fn frame(
         &mut self,
+        event_loop: &egui_winit::winit::event_loop::ActiveEventLoop,
         ui: &mut impl FnMut(
             &egui::Context,
             &EngineStatus,
@@ -457,6 +506,10 @@ impl<E: EngineRenderer> Host<E> {
             root.state.take_egui_input(&root.window)
         };
 
+        // Smuggle the live `&ActiveEventLoop` to the immediate-viewport
+        // renderer for the duration of `context.run()`. See
+        // `Host::active_event_loop` docs for the invariant.
+        self.active_event_loop.set(event_loop as *const _);
         let full_output = self.context.run(raw_input, |ctx| {
             ui(
                 ctx,
@@ -467,6 +520,7 @@ impl<E: EngineRenderer> Host<E> {
                 &mut self.storage,
             );
         });
+        self.active_event_loop.set(std::ptr::null());
 
         let egui::FullOutput {
             platform_output,
@@ -544,8 +598,7 @@ impl<E: EngineRenderer> Host<E> {
             scale_factor,
             screen_size,
             clear_color,
-            compositor_timeline,
-            signal_value,
+            Some((compositor_timeline, signal_value)),
         );
 
         // ── 9. Commit signal value / handle swapchain rebuild ──────────────
@@ -815,11 +868,199 @@ impl<E: EngineRenderer> Host<E> {
         self.composited_target_index = None;
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // Multi-viewport (B9) — immediate renderer install/uninstall + driver
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Wire up egui's multi-viewport support: install an
+    /// immediate-viewport renderer pointing at this Host and disable
+    /// egui's default `embed_viewports` short-circuit.
+    ///
+    /// Must be called exactly once per Host, AFTER it has been placed in
+    /// a `Box` so the pointer we capture is stable, and BEFORE the first
+    /// `frame()` call.
+    ///
+    /// # Safety
+    /// - `ptr` must reference a `Host<E>` living inside a `Box` whose
+    ///   heap address will not change while this renderer is installed.
+    /// - The Host must outlive any call to the installed renderer.
+    ///   [`Host::destroy`] explicitly uninstalls via
+    ///   [`Host::uninstall_immediate_viewport_renderer`] before teardown.
+    /// - Must run on the main (winit event-loop) thread, which is the
+    ///   same thread that invokes `Context::show_viewport_immediate`.
+    pub(crate) unsafe fn install_immediate_viewport_renderer(ptr: *mut Self) {
+        // Tell egui to stop embedding — without this every
+        // show_viewport_immediate / show_viewport_deferred is silently
+        // coalesced into the calling context and our renderer is never
+        // asked to produce a real window.
+        (*ptr).context.set_embed_viewports(false);
+        let host_ptr = HostPtr(ptr);
+        // `set_immediate_viewport_renderer` is an associated function
+        // (writes into a thread-local, not the Context instance) —
+        // call via the type, not a method receiver.
+        egui::Context::set_immediate_viewport_renderer(move |_ctx, iv| {
+            // SAFETY: see `install_immediate_viewport_renderer`'s
+            // contract. The closure is only invoked by
+            // `Context::show_viewport_immediate`, which only fires
+            // from inside `Context::run` on the main thread. Host
+            // lives at the pinned heap address until `destroy()`
+            // uninstalls this callback.
+            unsafe {
+                (*host_ptr.0).immediate_viewport_frame(iv);
+            }
+        });
+    }
+
+    /// Replace the installed immediate-viewport renderer with a no-op
+    /// and re-enable `embed_viewports` so any stray invocation after
+    /// this point does not dereference a to-be-dropped Host pointer.
+    /// Called at the top of [`Host::destroy`].
+    ///
+    /// # Safety
+    /// Must run on the main thread (the thread that owns the renderer
+    /// thread-local). Safe to call multiple times.
+    unsafe fn uninstall_immediate_viewport_renderer(&self) {
+        self.context.set_embed_viewports(true);
+        egui::Context::set_immediate_viewport_renderer(|_ctx, _iv| {});
+    }
+
+    /// Drive one immediate-viewport frame. Invoked from the closure
+    /// installed by [`Self::install_immediate_viewport_renderer`] when
+    /// user code calls `Context::show_viewport_immediate` inside
+    /// `Context::run`. Creates the child viewport on first invocation
+    /// for a given `ViewportId`, reuses it on subsequent calls, then
+    /// drives the child's own egui cycle: take input → run UI →
+    /// tessellate → composite → present.
+    ///
+    /// # Safety
+    /// - Caller must be the thread that installed the renderer (main).
+    /// - [`Host::active_event_loop`] must be non-null; it is set by
+    ///   [`Host::frame`] for the duration of `context.run()` and
+    ///   cleared afterwards.
+    unsafe fn immediate_viewport_frame(&mut self, iv: egui::ImmediateViewport<'_>) {
+        let egui::ImmediateViewport {
+            ids,
+            builder,
+            mut viewport_ui_cb,
+        } = iv;
+        let id = ids.this;
+
+        // On first encounter for this ViewportId, build the child
+        // viewport (window + surface + compositor + state). Subsequent
+        // calls reuse the existing entry. Builder deltas (size / title
+        // changes) are left for a post-alpha pass.
+        if !self.viewports.contains_key(&id) {
+            let ev_ptr = self.active_event_loop.get();
+            assert!(
+                !ev_ptr.is_null(),
+                "immediate_viewport_frame fired outside a Host::frame `context.run()` — \
+                 Host::active_event_loop was not set by the frame driver",
+            );
+            // SAFETY: `active_event_loop` is set by `Host::frame` for
+            // the duration of the enclosing `context.run(...)`, which is
+            // the call we're in right now.
+            let event_loop: &egui_winit::winit::event_loop::ActiveEventLoop = &*ev_ptr;
+
+            let child = crate::viewport::Viewport::new_child(
+                &self.vulkan,
+                event_loop,
+                id,
+                ids.parent,
+                egui::ViewportClass::Immediate,
+                builder,
+                &self.context,
+                self.present_mode,
+                None,
+            );
+            let window_id = child.window.id();
+            self.viewports.insert(id, child);
+            self.window_id_to_viewport.insert(window_id, id);
+        }
+
+        // Take this viewport's pending winit input.
+        let raw_input = {
+            let vp = self
+                .viewports
+                .get_mut(&id)
+                .expect("child viewport invariant violated");
+            vp.state.take_egui_input(&vp.window)
+        };
+
+        // Run egui for this viewport. The caller's ui callback in
+        // ImmediateViewport.viewport_ui_cb receives `&egui::Context` and
+        // draws panels/windows against it — same shape as the root UI
+        // closure.
+        let full_output = self.context.run(raw_input, |ctx| viewport_ui_cb(ctx));
+
+        let egui::FullOutput {
+            platform_output,
+            textures_delta,
+            shapes,
+            pixels_per_point,
+            viewport_output: _,
+        } = full_output;
+
+        // Extract cross-field reads before taking &mut vp so borrow-
+        // checker is happy. `clear_color` and `context.tessellate` /
+        // `viewport_rect` can all run with only immutable borrows of
+        // `self` and standalone values; we then re-borrow viewports
+        // mutably for the render call.
+        let clear_color = self.clear_color;
+        let clipped_primitives = self.context.tessellate(shapes, pixels_per_point);
+        let egui_screen = self.context.viewport_rect();
+
+        let vp = self
+            .viewports
+            .get_mut(&id)
+            .expect("child viewport invariant violated");
+        vp.state.handle_platform_output(&vp.window, platform_output);
+
+        let sc_extent = vp.compositor.swapchain_extent();
+        let screen_size = [sc_extent.width, sc_extent.height];
+        let w_points = egui_screen.width().max(1.0);
+        let scale_factor = sc_extent.width as f32 / w_points;
+
+        // Child viewports MUST pass `None` for engine_signal — only
+        // ROOT signals the engine-handshake timeline (see Compositor
+        // docs + decision #2 above).
+        let result = vp.compositor.render_frame(
+            clipped_primitives,
+            textures_delta,
+            scale_factor,
+            screen_size,
+            clear_color,
+            None,
+        );
+
+        match result {
+            Ok(crate::compositor::FrameOutcome::Rendered) => {}
+            Ok(crate::compositor::FrameOutcome::RenderedNeedsRebuild) => {
+                vp.compositor.recreate_swapchain();
+            }
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                vp.compositor.recreate_swapchain();
+            }
+            Err(e) => {
+                log::error!("child viewport render_frame failed: {:?}", e);
+            }
+        }
+
+        vp.window.request_redraw();
+    }
+
     /// Destroy all host resources. Must be called before dropping.
     ///
     /// # Safety
     /// Caller must ensure the Vulkan device is valid and no GPU work is in flight.
     pub(crate) unsafe fn destroy(&mut self) {
+        // Uninstall the immediate-viewport renderer FIRST. Any stray
+        // invocation after this point (e.g. during `storage.flush` or
+        // engine-thread teardown paths that might run egui code) hits
+        // the no-op rather than dereferencing a to-be-invalid Host
+        // pointer. See `install_immediate_viewport_renderer`'s safety
+        // contract.
+        self.uninstall_immediate_viewport_renderer();
+
         // Save persisted state BEFORE tearing down. Both window geometry
         // (from the live winit window) and egui memory (from the context)
         // need to be captured while their sources are still valid.

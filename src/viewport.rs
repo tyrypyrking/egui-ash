@@ -135,6 +135,145 @@ impl Viewport {
         }
     }
 
+    /// Build a non-root viewport (Immediate or Deferred). Called from
+    /// [`crate::host::Host`] when egui reports a new viewport in the
+    /// immediate-viewport renderer or in a deferred `viewport_output`
+    /// map.
+    ///
+    /// Differs from `new_root` in three respects:
+    ///   1. The winit window is created here from the supplied
+    ///      [`egui::ViewportBuilder`] — the ROOT path creates the window
+    ///      earlier in `run.rs` so persisted settings can be applied.
+    ///   2. A pre-closed `RegistryCommand` receiver is passed to the
+    ///      Compositor — per B9 decision #8, user-registered textures
+    ///      are ROOT-only in the alpha; child compositors never see any
+    ///      Register/Update/Unregister commands.
+    ///   3. Starts with `is_first_frame: true` and the caller-supplied
+    ///      `ViewportClass` + `ui_cb` (None for Immediate, Some for
+    ///      Deferred).
+    ///
+    /// # Safety
+    /// - All Vulkan handles in `vulkan` must be valid.
+    /// - Must run on the main thread (owns the new winit Window).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn new_child(
+        vulkan: &VulkanContext,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        id: egui::ViewportId,
+        parent: egui::ViewportId,
+        class: egui::ViewportClass,
+        builder: egui::ViewportBuilder,
+        context: &egui::Context,
+        present_mode: vk::PresentModeKHR,
+        ui_cb: Option<Arc<egui::DeferredViewportUiCallback>>,
+    ) -> Self {
+        // Translate the egui ViewportBuilder into winit WindowAttributes.
+        // Cover every field winit honours at creation time; egui patches
+        // (size/title changes after creation) are applied per-frame in a
+        // later step.
+        let mut attrs = winit::window::WindowAttributes::default().with_visible(true);
+        if let Some(title) = &builder.title {
+            attrs = attrs.with_title(title.clone());
+        }
+        if let Some(pos) = builder.position {
+            attrs =
+                attrs.with_position(winit::dpi::LogicalPosition::new(pos.x as f64, pos.y as f64));
+        }
+        if let Some(size) = builder.inner_size {
+            attrs =
+                attrs.with_inner_size(winit::dpi::LogicalSize::new(size.x as f64, size.y as f64));
+        }
+        if let Some(size) = builder.min_inner_size {
+            attrs = attrs
+                .with_min_inner_size(winit::dpi::LogicalSize::new(size.x as f64, size.y as f64));
+        }
+        if let Some(size) = builder.max_inner_size {
+            attrs = attrs
+                .with_max_inner_size(winit::dpi::LogicalSize::new(size.x as f64, size.y as f64));
+        }
+        if let Some(decorations) = builder.decorations {
+            attrs = attrs.with_decorations(decorations);
+        }
+        if let Some(resizable) = builder.resizable {
+            attrs = attrs.with_resizable(resizable);
+        }
+        if let Some(transparent) = builder.transparent {
+            attrs = attrs.with_transparent(transparent);
+        }
+        if let Some(maximized) = builder.maximized {
+            attrs = attrs.with_maximized(maximized);
+        }
+
+        let window = event_loop
+            .create_window(attrs)
+            .expect("failed to create child viewport window");
+
+        let surface = ash_window::create_surface(
+            &vulkan.entry,
+            &vulkan.instance,
+            window
+                .display_handle()
+                .expect("failed to get display handle")
+                .as_raw(),
+            window
+                .window_handle()
+                .expect("failed to get window handle")
+                .as_raw(),
+            None,
+        )
+        .expect("failed to create surface");
+
+        // Dummy channel — drop the sender so the compositor's per-frame
+        // drain sees `Err(Disconnected)` immediately and exits. Per B9
+        // decision #8 non-root compositors don't receive user textures
+        // in the alpha.
+        let (tx, registry_rx) = std::sync::mpsc::channel();
+        drop(tx);
+
+        let initial = window.inner_size();
+        let compositor = Compositor::new(
+            &vulkan.entry,
+            &vulkan.instance,
+            &vulkan.device,
+            vulkan.physical_device,
+            vulkan.host_queue,
+            vulkan.host_queue_family_index,
+            registry_rx,
+            surface,
+            present_mode,
+            vulkan.queue_mutex.clone(),
+            vk::Extent2D {
+                width: initial.width,
+                height: initial.height,
+            },
+        );
+
+        let state = egui_winit::State::new(
+            context.clone(),
+            id,
+            event_loop,
+            Some(window.scale_factor() as f32),
+            // Non-root viewports default to the platform theme; explicit
+            // theme propagation is a post-alpha nicety.
+            None,
+            None,
+        );
+
+        Self {
+            id,
+            ids: egui::ViewportIdPair { this: id, parent },
+            class,
+            builder,
+            info: egui::ViewportInfo::default(),
+            is_first_frame: true,
+            window,
+            state,
+            compositor,
+            surface,
+            ui_cb,
+        }
+    }
+
     /// Destroy this viewport's Vulkan resources: compositor first (its
     /// internal `device_wait_idle` drains pending submits against the
     /// swapchain), then the surface.

@@ -558,11 +558,16 @@ impl Compositor {
 
     /// Render one frame: update textures, record draw commands, submit, present.
     ///
-    /// `compositor_timeline` is signaled with `signal_value` as part of the
-    /// queue submit. Returns `Ok(FrameOutcome::_)` when the submit happened
-    /// (signal value committed) and `Err(ERROR_OUT_OF_DATE_KHR)` when the
-    /// submit was skipped because the swapchain is stale (signal NOT
-    /// committed — caller must not advance the pool's compositor counter).
+    /// `engine_signal` is the `(timeline, value)` pair that should be
+    /// signaled on the engine-handshake timeline as part of the queue
+    /// submit. `Some` is the ROOT-viewport path — the engine thread waits
+    /// on this timeline to know the host is done sampling. `None` is the
+    /// child-viewport path: child compositors sample the engine image but
+    /// must NOT signal the engine timeline, otherwise they'd race ROOT's
+    /// sampling cycle. Returns `Ok(FrameOutcome::_)` when the submit
+    /// happened (caller may commit `signal_value` if it was supplied) and
+    /// `Err(ERROR_OUT_OF_DATE_KHR)` when the submit was skipped because
+    /// the swapchain is stale.
     #[allow(clippy::too_many_arguments)]
     pub(crate) unsafe fn render_frame(
         &mut self,
@@ -571,8 +576,7 @@ impl Compositor {
         scale_factor: f32,
         screen_size: [u32; 2],
         clear_color: [f32; 4],
-        compositor_timeline: vk::Semaphore,
-        signal_value: u64,
+        engine_signal: Option<(vk::Semaphore, u64)>,
     ) -> Result<FrameOutcome, vk::Result> {
         // Wait for the previous work at this frame index to finish.
         self.device
@@ -665,24 +669,34 @@ impl Compositor {
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        // Signal both the binary render_finished (for queue_present) and the
-        // timeline compositor semaphore (for the engine to wait on next frame).
-        // Binary semaphores ignore the corresponding timeline value.
-        let signal_semaphores = [
-            self.render_finished_semaphores[self.current_frame],
-            compositor_timeline,
-        ];
-        let signal_values = [0u64, signal_value];
+        // Signal the binary render_finished (required for queue_present) and,
+        // when `engine_signal` is `Some`, also the engine-handshake timeline
+        // with its value. Binary semaphores ignore the corresponding
+        // timeline value. Child viewports pass `None` here so they don't
+        // perturb the engine-host handshake timeline.
+        let signal_semaphores: Vec<vk::Semaphore> = match engine_signal {
+            Some((timeline, _)) => vec![
+                self.render_finished_semaphores[self.current_frame],
+                timeline,
+            ],
+            None => vec![self.render_finished_semaphores[self.current_frame]],
+        };
+        let signal_values: Vec<u64> = match engine_signal {
+            Some((_, value)) => vec![0u64, value],
+            None => vec![0u64],
+        };
         let cmd_bufs = [cmd];
 
         let mut timeline_info =
             vk::TimelineSemaphoreSubmitInfo::default().signal_semaphore_values(&signal_values);
-        let submit_info = vk::SubmitInfo::default()
+        let mut submit_info = vk::SubmitInfo::default()
             .wait_semaphores(&wait_semaphores)
             .wait_dst_stage_mask(&wait_stages)
             .command_buffers(&cmd_bufs)
-            .signal_semaphores(&signal_semaphores)
-            .push_next(&mut timeline_info);
+            .signal_semaphores(&signal_semaphores);
+        if engine_signal.is_some() {
+            submit_info = submit_info.push_next(&mut timeline_info);
+        }
         {
             let _qlock = self
                 .queue_mutex
