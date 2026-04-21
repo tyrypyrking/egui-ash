@@ -527,7 +527,7 @@ impl<E: EngineRenderer> Host<E> {
             textures_delta,
             shapes,
             pixels_per_point,
-            viewport_output: _,
+            viewport_output,
         } = full_output;
 
         {
@@ -626,10 +626,181 @@ impl<E: EngineRenderer> Host<E> {
             }
         }
 
-        // ── 10. Request redraw ─────────────────────────────────────────────
+        // ── 10. Process deferred viewports ─────────────────────────────────
+        // Create newly-seen deferred viewports, run their ui_cb, composite,
+        // and prune viewports that have disappeared from egui's output.
+        // Immediate viewports were already handled during the main
+        // `context.run(...)` via the installed renderer.
+        self.process_deferred_viewports(event_loop, &viewport_output);
+
+        // ── 11. Request redraw ─────────────────────────────────────────────
         // Always request redraw — the engine is continuously producing frames
         // and the UI needs to stay responsive.
         self.root().window.request_redraw();
+    }
+
+    /// Create / render / prune deferred viewports based on egui's
+    /// `FullOutput::viewport_output` map. Called once per frame, after
+    /// the ROOT compositor's render submit.
+    ///
+    /// - A non-root entry with `viewport_ui_cb = Some(cb)` means egui
+    ///   wants us to continue driving this deferred viewport: if it's
+    ///   new we build the window, then we invoke `cb` via a nested
+    ///   `context.run(...)` to collect that viewport's draw data and
+    ///   composite it to its own swapchain.
+    /// - A non-root entry with `viewport_ui_cb = None` means an
+    ///   Immediate viewport that was handled during the main run —
+    ///   nothing extra to do (it already presented).
+    /// - A non-root Viewport we own that is NOT listed in
+    ///   `viewport_output` has been abandoned by egui (user stopped
+    ///   calling `show_viewport_deferred`, or immediate viewport
+    ///   skipped this frame): destroy it inline. The B9 step-7 pass
+    ///   converts this to a fence-poll deferred-destruction queue.
+    ///
+    /// Known limitation (alpha): egui's managed-texture delta (font
+    /// atlas etc.) is only emitted to the compositor whose
+    /// `context.run` produced it, so deferred viewports can have an
+    /// empty managed-texture table and text may not render. Same class
+    /// of issue as user-textures in non-root viewports (decision #8).
+    /// Full broadcast-delta fix is tracked in docs/known-limitations.md
+    /// and scheduled for a post-alpha release.
+    ///
+    /// # Safety
+    /// Vulkan device must be valid; called from the main event-loop
+    /// thread while no other host method is running.
+    unsafe fn process_deferred_viewports(
+        &mut self,
+        event_loop: &egui_winit::winit::event_loop::ActiveEventLoop,
+        viewport_output: &std::collections::BTreeMap<egui::ViewportId, egui::ViewportOutput>,
+    ) {
+        // ---- Prune viewports that disappeared from egui's output ------
+        let to_remove: Vec<egui::ViewportId> = self
+            .viewports
+            .keys()
+            .copied()
+            .filter(|id| *id != egui::ViewportId::ROOT && !viewport_output.contains_key(id))
+            .collect();
+        if !to_remove.is_empty() {
+            // Inline destruction for the alpha; step 7 replaces this
+            // with the fence-poll deferred-destruction queue (decision
+            // #3) so we don't stall the main thread on abandoned
+            // viewports. `device_wait_idle` is the safe hammer.
+            self.vulkan
+                .device
+                .device_wait_idle()
+                .expect("device_wait_idle failed");
+            for id in to_remove {
+                if let Some(mut vp) = self.viewports.remove(&id) {
+                    let wid = vp.window.id();
+                    self.window_id_to_viewport.remove(&wid);
+                    vp.destroy(&self.vulkan);
+                }
+            }
+        }
+
+        // ---- Render deferred viewports --------------------------------
+        // Clone the id list up front so we can mutate `self.viewports`
+        // inside the loop without holding a borrow.
+        let deferred_ids: Vec<egui::ViewportId> = viewport_output
+            .iter()
+            .filter(|(id, out)| **id != egui::ViewportId::ROOT && out.viewport_ui_cb.is_some())
+            .map(|(id, _)| *id)
+            .collect();
+
+        for id in deferred_ids {
+            // Re-fetch the output entry inside the loop — cheap, and
+            // avoids holding a borrow across mutating `self`.
+            let (parent, builder, ui_cb) = {
+                let out = viewport_output
+                    .get(&id)
+                    .expect("viewport_output invariant violated");
+                (
+                    out.parent,
+                    out.builder.clone(),
+                    out.viewport_ui_cb
+                        .clone()
+                        .expect("deferred_ids filter guarantees Some"),
+                )
+            };
+
+            // Create on first encounter.
+            if !self.viewports.contains_key(&id) {
+                let child = crate::viewport::Viewport::new_child(
+                    &self.vulkan,
+                    event_loop,
+                    id,
+                    parent,
+                    egui::ViewportClass::Deferred,
+                    builder,
+                    &self.context,
+                    self.present_mode,
+                    Some(ui_cb.clone()),
+                );
+                let window_id = child.window.id();
+                self.viewports.insert(id, child);
+                self.window_id_to_viewport.insert(window_id, id);
+            }
+
+            // Take this viewport's raw input.
+            let raw_input = {
+                let vp = self
+                    .viewports
+                    .get_mut(&id)
+                    .expect("child viewport invariant violated");
+                vp.state.take_egui_input(&vp.window)
+            };
+
+            // Run the stored UI callback through egui for this viewport.
+            let full_output = self.context.run(raw_input, |ctx| ui_cb(ctx));
+            let egui::FullOutput {
+                platform_output,
+                textures_delta,
+                shapes,
+                pixels_per_point,
+                viewport_output: _,
+            } = full_output;
+
+            let clear_color = self.clear_color;
+            let clipped_primitives = self.context.tessellate(shapes, pixels_per_point);
+            let egui_screen = self.context.viewport_rect();
+
+            let vp = self
+                .viewports
+                .get_mut(&id)
+                .expect("child viewport invariant violated");
+            vp.state.handle_platform_output(&vp.window, platform_output);
+
+            let sc_extent = vp.compositor.swapchain_extent();
+            let screen_size = [sc_extent.width, sc_extent.height];
+            let w_points = egui_screen.width().max(1.0);
+            let scale_factor = sc_extent.width as f32 / w_points;
+
+            // Child viewports pass `None` for engine_signal (see
+            // Compositor::render_frame docs).
+            let result = vp.compositor.render_frame(
+                clipped_primitives,
+                textures_delta,
+                scale_factor,
+                screen_size,
+                clear_color,
+                None,
+            );
+
+            match result {
+                Ok(crate::compositor::FrameOutcome::Rendered) => {}
+                Ok(crate::compositor::FrameOutcome::RenderedNeedsRebuild) => {
+                    vp.compositor.recreate_swapchain();
+                }
+                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                    vp.compositor.recreate_swapchain();
+                }
+                Err(e) => {
+                    log::error!("deferred viewport render_frame failed: {:?}", e);
+                }
+            }
+
+            vp.window.request_redraw();
+        }
     }
 
     /// Pending exit code requested by the UI closure via
