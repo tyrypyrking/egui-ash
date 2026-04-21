@@ -556,7 +556,7 @@ impl Compositor {
     // Frame rendering
     // ─────────────────────────────────────────────────────────────────────
 
-    /// Render one frame: update textures, record draw commands, submit, present.
+    /// Render one frame: record draw commands, submit, present.
     ///
     /// `engine_signal` is the `(timeline, value)` pair that should be
     /// signaled on the engine-handshake timeline as part of the queue
@@ -564,15 +564,21 @@ impl Compositor {
     /// on this timeline to know the host is done sampling. `None` is the
     /// child-viewport path: child compositors sample the engine image but
     /// must NOT signal the engine timeline, otherwise they'd race ROOT's
-    /// sampling cycle. Returns `Ok(FrameOutcome::_)` when the submit
-    /// happened (caller may commit `signal_value` if it was supplied) and
-    /// `Err(ERROR_OUT_OF_DATE_KHR)` when the submit was skipped because
-    /// the swapchain is stale.
-    #[allow(clippy::too_many_arguments)]
+    /// sampling cycle.
+    ///
+    /// Texture deltas are NOT applied here — callers are responsible
+    /// for calling [`Self::apply_texture_delta`] or
+    /// [`Self::apply_texture_delta_external`] before this, so the same
+    /// egui-managed texture state can be broadcast across every
+    /// compositor.
+    ///
+    /// Returns `Ok(FrameOutcome::_)` when the submit happened (caller
+    /// may commit `signal_value` if it was supplied) and
+    /// `Err(ERROR_OUT_OF_DATE_KHR)` when the submit was skipped
+    /// because the swapchain is stale.
     pub(crate) unsafe fn render_frame(
         &mut self,
         clipped_primitives: Vec<egui::ClippedPrimitive>,
-        textures_delta: egui::TexturesDelta,
         scale_factor: f32,
         screen_size: [u32; 2],
         clear_color: [f32; 4],
@@ -597,6 +603,12 @@ impl Compositor {
         // register/update/unregister operations are lock-free.
         self.drain_registry_commands();
 
+        // NOTE: egui managed-texture updates are NOT applied here.
+        // Callers broadcast the delta to every compositor via
+        // `apply_texture_delta_external` before this call, so pop-out
+        // compositors see the same textures ROOT does. See that method's
+        // docs.
+
         // Acquire next swapchain image.
         let (image_index, _suboptimal) = match self.swapchain_loader.acquire_next_image(
             self.swapchain,
@@ -616,9 +628,6 @@ impl Compositor {
             }
         };
         let image_index = image_index as usize;
-
-        // Update egui managed textures.
-        self.apply_texture_delta(textures_delta);
 
         // Reset and begin command buffer.
         let cmd = self.command_buffers[self.current_frame];
@@ -1621,19 +1630,55 @@ impl Compositor {
 
     // ── Texture management ───────────────────────────────────────────────
 
-    unsafe fn apply_texture_delta(&mut self, delta: egui::TexturesDelta) {
-        for (id, image_delta) in delta.set {
-            self.update_texture(id, image_delta);
+    /// Apply an egui texture delta to this compositor's managed
+    /// textures. Takes `&TexturesDelta` so the same delta can be
+    /// broadcast to multiple compositors without cloning — B9 decision
+    /// about managed-texture propagation across viewports.
+    ///
+    /// # Safety
+    /// Caller must ensure no command buffer referencing a texture in
+    /// `delta.free` is still in flight. Satisfied by calling this
+    /// either from within `render_frame` (after `wait_for_fences`) or
+    /// via [`Self::apply_texture_delta_external`] which drains all
+    /// in-flight fences up front.
+    pub(crate) unsafe fn apply_texture_delta(&mut self, delta: &egui::TexturesDelta) {
+        for (id, image_delta) in &delta.set {
+            self.update_texture(*id, image_delta);
         }
-        for id in delta.free {
-            self.free_texture(id);
+        for id in &delta.free {
+            self.free_texture(*id);
         }
+    }
+
+    /// Apply an egui texture delta outside of `render_frame`'s fence
+    /// guard. Drains every in-flight fence first so any submits
+    /// referencing `delta.free` textures have completed before those
+    /// images are freed.
+    ///
+    /// Used by `Host` to broadcast a single delta to every compositor
+    /// after each `context.run`, so non-root viewports' managed-
+    /// texture tables stay in sync with ROOT's (fonts / icons in
+    /// pop-outs). No-op on empty delta.
+    ///
+    /// # Safety
+    /// `device` must be valid. Caller runs on the main thread with
+    /// no concurrent render on this compositor.
+    pub(crate) unsafe fn apply_texture_delta_external(&mut self, delta: &egui::TexturesDelta) {
+        if delta.set.is_empty() && delta.free.is_empty() {
+            return;
+        }
+        if !self.in_flight_fences.is_empty() {
+            let _ = self
+                .device
+                .wait_for_fences(&self.in_flight_fences, true, u64::MAX);
+        }
+        self.apply_texture_delta(delta);
     }
 
     unsafe fn update_texture(
         &mut self,
         texture_id: egui::TextureId,
-        delta: egui::epaint::ImageDelta,
+        delta: &egui::epaint::ImageDelta,
     ) {
         // Extract pixel data.
         let data: Vec<u8> = match &delta.image {

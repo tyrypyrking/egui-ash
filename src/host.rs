@@ -263,6 +263,29 @@ impl<E: EngineRenderer> Host<E> {
             .expect("ROOT viewport invariant violated")
     }
 
+    /// Broadcast an egui texture delta to every compositor's managed-
+    /// texture table. Each compositor maintains its own Vulkan
+    /// images + descriptor sets for egui-managed textures (font atlas,
+    /// egui icons), so we have to apply each delta to every compositor
+    /// for fonts to render in pop-out windows. Called once per
+    /// `context.run` at each of ROOT / immediate / deferred paths.
+    ///
+    /// No-op when the delta is empty (the common case after the first
+    /// few frames once the atlas is stable).
+    ///
+    /// # Safety
+    /// Vulkan device must be valid; called from the main event-loop
+    /// thread. Per-compositor `apply_texture_delta_external` drains
+    /// in-flight fences before freeing to avoid UB on delta.free.
+    unsafe fn broadcast_texture_delta(&mut self, delta: &egui::TexturesDelta) {
+        if delta.set.is_empty() && delta.free.is_empty() {
+            return;
+        }
+        for vp in self.viewports.values_mut() {
+            vp.compositor.apply_texture_delta_external(delta);
+        }
+    }
+
     /// Broadcast a new engine-viewport image view (or "show black") to
     /// every compositor's `engine_viewport_descriptor_set`. Implements
     /// B9 decision #2: all viewports sample the same engine image; one
@@ -734,9 +757,13 @@ impl<E: EngineRenderer> Host<E> {
         let compositor_timeline = self.render_target_pool.compositor_timeline();
         let clear_color = self.clear_color;
 
+        // Broadcast ROOT's managed-texture delta to every compositor
+        // (fonts / egui icons) before rendering. See
+        // `broadcast_texture_delta` docs.
+        self.broadcast_texture_delta(&textures_delta);
+
         let result = self.root_mut().compositor.render_frame(
             clipped_primitives,
-            textures_delta,
             scale_factor,
             screen_size,
             clear_color,
@@ -857,9 +884,19 @@ impl<E: EngineRenderer> Host<E> {
 
             // Create on first encounter.
             if !self.viewports.contains_key(&id) {
+                // Same parent-window plumbing as the immediate path —
+                // makes tiling compositors float the pop-out.
+                use raw_window_handle::HasWindowHandle as _;
+                let parent_handle = self
+                    .viewports
+                    .get(&egui::ViewportId::ROOT)
+                    .and_then(|vp| vp.window.window_handle().ok())
+                    .map(|h| h.as_raw());
+
                 let child = crate::viewport::Viewport::new_child(
                     &self.vulkan,
                     event_loop,
+                    parent_handle,
                     id,
                     parent,
                     egui::ViewportClass::Deferred,
@@ -896,7 +933,13 @@ impl<E: EngineRenderer> Host<E> {
 
             let clear_color = self.clear_color;
             let clipped_primitives = self.context.tessellate(shapes, pixels_per_point);
-            let egui_screen = self.context.viewport_rect();
+
+            // Broadcast this pass's managed-texture delta to every
+            // compositor BEFORE rendering. Done here (not inside
+            // render_frame) so pop-out viewports see the same egui-
+            // managed textures ROOT does — critical for fonts /
+            // icons in deferred windows.
+            self.broadcast_texture_delta(&textures_delta);
 
             let vp = self
                 .viewports
@@ -906,14 +949,18 @@ impl<E: EngineRenderer> Host<E> {
 
             let sc_extent = vp.compositor.swapchain_extent();
             let screen_size = [sc_extent.width, sc_extent.height];
-            let w_points = egui_screen.width().max(1.0);
-            let scale_factor = sc_extent.width as f32 / w_points;
+            // pixels_per_point comes from this viewport's `ctx.run`
+            // so it's this window's DPI × zoom_factor. Deriving
+            // scale_factor from `ctx.viewport_rect()` would use
+            // whatever viewport is "current" in egui's internal
+            // state after `ctx.run` returns — which may be ROOT for
+            // a nested run — and miscompute the scale.
+            let scale_factor = pixels_per_point;
 
             // Child viewports pass `None` for engine_signal (see
             // Compositor::render_frame docs).
             let result = vp.compositor.render_frame(
                 clipped_primitives,
-                textures_delta,
                 scale_factor,
                 screen_size,
                 clear_color,
@@ -1266,9 +1313,22 @@ impl<E: EngineRenderer> Host<E> {
             // the call we're in right now.
             let event_loop: &egui_winit::winit::event_loop::ActiveEventLoop = &*ev_ptr;
 
+            // Use ROOT's window as the logical parent for every pop-out.
+            // On Wayland tiling compositors (niri, Hyprland, Sway's
+            // scratchpad) this becomes xdg_toplevel.set_parent, so the
+            // child is treated as a floating dialog of the app rather
+            // than a peer toplevel that gets tiled into the grid.
+            use raw_window_handle::HasWindowHandle as _;
+            let parent_handle = self
+                .viewports
+                .get(&egui::ViewportId::ROOT)
+                .and_then(|vp| vp.window.window_handle().ok())
+                .map(|h| h.as_raw());
+
             let child = crate::viewport::Viewport::new_child(
                 &self.vulkan,
                 event_loop,
+                parent_handle,
                 id,
                 ids.parent,
                 egui::ViewportClass::Immediate,
@@ -1316,7 +1376,13 @@ impl<E: EngineRenderer> Host<E> {
         // mutably for the render call.
         let clear_color = self.clear_color;
         let clipped_primitives = self.context.tessellate(shapes, pixels_per_point);
-        let egui_screen = self.context.viewport_rect();
+
+        // Broadcast this inner pass's managed-texture delta to every
+        // compositor BEFORE rendering. If egui's font atlas was first
+        // populated during this inner pass (e.g. the first frame an
+        // immediate viewport opened and called for text), broadcasting
+        // propagates it to ROOT and any other pop-out compositors.
+        self.broadcast_texture_delta(&textures_delta);
 
         let vp = self
             .viewports
@@ -1326,15 +1392,14 @@ impl<E: EngineRenderer> Host<E> {
 
         let sc_extent = vp.compositor.swapchain_extent();
         let screen_size = [sc_extent.width, sc_extent.height];
-        let w_points = egui_screen.width().max(1.0);
-        let scale_factor = sc_extent.width as f32 / w_points;
+        // See deferred-viewport path for the rationale.
+        let scale_factor = pixels_per_point;
 
         // Child viewports MUST pass `None` for engine_signal — only
         // ROOT signals the engine-handshake timeline (see Compositor
         // docs + decision #2 above).
         let result = vp.compositor.render_frame(
             clipped_primitives,
-            textures_delta,
             scale_factor,
             screen_size,
             clear_color,

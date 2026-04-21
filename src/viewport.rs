@@ -159,6 +159,7 @@ impl Viewport {
     pub(crate) unsafe fn new_child(
         vulkan: &VulkanContext,
         event_loop: &winit::event_loop::ActiveEventLoop,
+        parent_handle: Option<raw_window_handle::RawWindowHandle>,
         id: egui::ViewportId,
         parent: egui::ViewportId,
         class: egui::ViewportClass,
@@ -172,6 +173,23 @@ impl Viewport {
         // (size/title changes after creation) are applied per-frame in a
         // later step.
         let mut attrs = winit::window::WindowAttributes::default().with_visible(true);
+
+        // Tell the windowing system this child is a dialog/transient of
+        // its parent window. Without this, Wayland tiling compositors
+        // (niri, Hyprland with auto-tiling, etc.) treat every pop-out
+        // as an independent toplevel and tile them — breaking the
+        // "floating pop-out" ergonomics egui's multi-viewport is for.
+        // X11 → WM_TRANSIENT_FOR, Wayland → xdg_toplevel.set_parent,
+        // Windows → owner relationship.
+        //
+        // SAFETY: `parent_handle` must point at a live winit Window
+        // that outlives this child viewport. Callers in `host.rs`
+        // source the handle from ROOT's Viewport; Host::destroy tears
+        // down non-root viewports before ROOT (B9 decision #4), so the
+        // handle stays valid until after this child's `destroy()`.
+        if let Some(handle) = parent_handle {
+            attrs = unsafe { attrs.with_parent_window(Some(handle)) };
+        }
         if let Some(title) = &builder.title {
             attrs = attrs.with_title(title.clone());
         }
