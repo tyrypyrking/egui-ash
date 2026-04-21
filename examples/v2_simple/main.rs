@@ -49,7 +49,8 @@ fn main() -> ExitCode {
               status: &EngineStatus,
               ui_state: &mut ColorUiState,
               engine_state: &ColorEngineState,
-              handle: &EngineHandle<ColorEngine>| {
+              handle: &EngineHandle<ColorEngine>,
+              _storage: &mut egui_ash::Storage| {
             egui::SidePanel::left("controls")
                 .default_width(250.0)
                 .show(ctx, |ui| {

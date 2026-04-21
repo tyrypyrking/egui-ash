@@ -1,5 +1,112 @@
 # Change Log
 
+## [1.0.0-alpha.1] - 2026-04-21
+
+**This is a ground-up rewrite.** Upgrading from 0.4.x requires rewriting your
+app against the new `EngineRenderer` trait + UI closure model. See the
+"Migrating from 0.4" table in the README for a symbol-by-symbol mapping.
+
+### Architectural shift
+
+- Render code runs on a dedicated **engine thread**, isolated from the UI
+  thread by `catch_unwind`. Engine panics no longer take down the app; the
+  UI shows a black viewport and the user can restart in-place via
+  `EngineHandle::restart(new_engine)`.
+- UI and engine state flow through `UiState` / `EngineState` associated
+  types on `EngineRenderer`, exchanged lock-free via `arc-swap`.
+- Frame handoff uses timeline semaphores on double-buffered render targets.
+
+### Added
+
+- `trait EngineRenderer` — the new user-render entry point (`init`,
+  `render`, `handle_event`, `destroy`).
+- `struct VulkanContext` — user-constructed bundle of Vulkan handles,
+  replaces `AshRenderState<A>`.
+- `struct EngineContext` — passed to `EngineRenderer::init` (device, queue,
+  queue family, initial extent, format, queue mutex, image registry).
+- `struct EngineHandle<E>` — passed to the UI closure; supports
+  `restart(engine)`, `exit(code)`, and `image_registry()`.
+- `struct EngineStatus` / `enum EngineHealth` / `enum EngineRestartError` —
+  engine state and restart diagnostics observable from the UI closure.
+- `struct RenderTarget` / `struct CompletedFrame` — opaque handles for the
+  engine's write-target / submit-result plumbing.
+- `enum EngineEvent` — `Pointer`, `Key`, `Scroll`, `Resize`, `Focus`,
+  `Device(winit::DeviceEvent)`, `Lifecycle(AppLifecycleEvent)`, `Shutdown`.
+- `enum AppLifecycleEvent` — `Suspended`, `Resumed`, `MemoryWarning`,
+  `LoopExiting`.
+- `struct ImageRegistry` / `struct UserTextureHandle` — replaces v0.4's
+  `ImageRegistry::register_user_texture`; obtainable via
+  `EngineHandle::image_registry()` (UI thread) or `EngineContext::image_registry`
+  (engine thread).
+- `RunOption::auto_save_interval: Option<Duration>` — default 30 s periodic
+  flush of persisted state for crash safety.
+- User-level persistent storage via `Storage::set_value` / `get_value`
+  (feature-gated on `persistence`), passed to the UI closure as its 6th
+  argument.
+- Crate-level `//!` documentation and architecture diagram on docs.rs.
+
+### Changed
+
+- `fn run` signature is entirely new. Old:
+  `run(app_id, creator, options) -> ExitCode`.
+  New:
+  `run(app_id, vulkan, engine, options, |ctx, status, ui_state, engine_state, engine_handle, storage| { ... }) -> ExitCode`.
+- `RunOption::persistent_windows` / `persistent_egui_memory` now actually
+  wire through — in 0.4 they were documented but only active in v1 code,
+  and broken during the rewrite until this release.
+- Persistence serialises window geometry and `egui::Memory` to
+  `<data_dir>/<app_id>/app.ron` (unchanged from v0.4 schema).
+
+### Removed (intentional architectural shifts)
+
+- `trait App` and `trait AppCreator<A>` — replaced by `EngineRenderer` +
+  closure.
+- `struct CreationContext` / `struct AshRenderState<A>` — the user now
+  constructs `VulkanContext` themselves.
+- `enum HandleRedraw` — v0.4's per-viewport `HandleRedraw::Handle(fn)` for
+  custom Vulkan rendering is retired. Move your rendering into
+  `EngineRenderer::render`. The engine thread is the only custom-Vulkan
+  path in v1.
+- `trait Allocator` / `trait Allocation` / `struct AllocationCreateInfo` /
+  `enum MemoryLocation` and the `gpu-allocator` feature flag. The user
+  owns `VkDevice` and decides how to allocate; egui-ash does not require
+  the allocator trait bound.
+- `struct ExitSignal` — use `EngineHandle::exit(code)` instead.
+- `struct EguiCommand` / `struct SwapchainUpdateInfo` — no longer needed;
+  the host owns swapchain management.
+- Per-viewport `request_redraw` callback.
+
+### Known limitations
+
+- **Cross-queue-family image transfer not yet implemented.**
+  `host_queue_family_index` must equal `engine_queue_family_index`. Asserted
+  at `Host::new`. Single-queue-family hardware (including single-queue Intel
+  / AMD RADV) fully supported via `VulkanContext::queue_mutex`. See
+  `docs/known-limitations.md`.
+- **Multi-viewport egui UI not yet restored.**
+  `egui::Window::show_viewport` / `show_viewport_immediate` are silently
+  ignored. Tracked in
+  `docs/superpowers/plans/2026-04-20-b9-multi-viewport.md`.
+
+### New required Vulkan 1.2 features
+
+Callers must enable the following on the `VkDevice`:
+
+- `timelineSemaphore`
+- `descriptorBindingSampledImageUpdateAfterBind`
+- `descriptorBindingUpdateUnusedWhilePending`
+
+See `examples/common/vkutils.rs` for a reference device-creation flow.
+
+### Examples
+
+Removed (covered v0.4 patterns that are retired): `multi_viewports`,
+`native_image`.
+
+New / rewritten against v1 API: `v2_simple`, `egui_ash_simple`,
+`egui_ash_vulkan` (triangle engine), `images`, `scene_view` (model engine),
+`tiles`.
+
 ## [0.4.0] - 2024-01-14
 ### Added
 - `egui_cmd.swapchain_recreate_required()` for change scale factor etc.

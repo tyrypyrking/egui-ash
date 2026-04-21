@@ -43,7 +43,8 @@ fn main() -> ExitCode {
               status: &egui_ash::EngineStatus,
               _ui_state: &mut ColorUiState,
               _engine_state: &ColorEngineState,
-              _handle: &egui_ash::EngineHandle<ColorEngine>| {
+              _handle: &egui_ash::EngineHandle<ColorEngine>,
+              _storage: &mut egui_ash::Storage| {
             if !loaders_installed {
                 egui_extras::install_image_loaders(ctx);
                 loaders_installed = true;

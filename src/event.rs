@@ -22,8 +22,39 @@ pub enum EngineEvent {
     Resize { extent: vk::Extent2D },
     /// Engine viewport gained/lost focus.
     Focus(bool),
+    /// Raw winit device event — raw mouse deltas, raw key scancodes, etc.
+    ///
+    /// Unlike `Pointer` / `Key`, these are device-level events not tied to
+    /// any particular window. Useful for FPS-style camera controls that
+    /// need raw mouse deltas (via `DeviceEvent::MouseMotion`) rather than
+    /// per-window cursor positions. Forwarded as-is from winit; not
+    /// filtered or processed by the host.
+    Device(egui_winit::winit::event::DeviceEvent),
+    /// Application lifecycle transitions forwarded from winit.
+    Lifecycle(AppLifecycleEvent),
     /// Graceful shutdown signal. Sent before the target channel closes.
     Shutdown,
+}
+
+/// Application-level lifecycle events forwarded to the engine.
+///
+/// `Resumed` and `Suspended` primarily matter on mobile (Android / iOS)
+/// where the window surface is destroyed and recreated as the app moves
+/// between foreground and background. On desktop the first `Resumed` is
+/// absorbed internally by `run()` to create the window, so only subsequent
+/// resumes (if any) reach the engine.
+#[derive(Debug, Clone, Copy)]
+pub enum AppLifecycleEvent {
+    /// App moved to the background (mobile: surface destroyed).
+    Suspended,
+    /// App moved to the foreground after a prior Suspended.
+    Resumed,
+    /// OS is signalling memory pressure — release caches if possible.
+    MemoryWarning,
+    /// Event loop is about to exit. Last chance to persist transient state
+    /// that isn't already covered by the `persistence` feature's automatic
+    /// window/egui-memory save.
+    LoopExiting,
 }
 
 impl std::fmt::Debug for EngineEvent {
@@ -51,6 +82,8 @@ impl std::fmt::Debug for EngineEvent {
                 .field("height", &extent.height)
                 .finish(),
             Self::Focus(focused) => f.debug_tuple("Focus").field(focused).finish(),
+            Self::Device(event) => f.debug_tuple("Device").field(event).finish(),
+            Self::Lifecycle(event) => f.debug_tuple("Lifecycle").field(event).finish(),
             Self::Shutdown => write!(f, "Shutdown"),
         }
     }

@@ -1,22 +1,43 @@
-// Persistence is declared on RunOption but not yet wired into the v2 Host.
-// Keep the module intact so the API isn't broken when re-integrated.
-#![allow(dead_code)]
+//! Persistence store for window geometry, egui memory, and user-defined
+//! key/value data.
+//!
+//! The `Storage` type is always available on the public API so that the
+//! UI-closure signature passed to [`run`](crate::run) stays stable across
+//! feature-flag configurations. Actual disk I/O and typed accessors are
+//! gated on the `persistence` feature:
+//!
+//! - **With** `persistence`: `Storage` is backed by a RON file at
+//!   `<data_dir>/<app_id>/app.ron` and exposes `set_value` / `get_value`
+//!   for user-defined persistent state. Window layout and egui memory are
+//!   also auto-saved when the corresponding `RunOption` flags are set.
+//! - **Without** `persistence`: `Storage` is a zero-sized stub. The typed
+//!   accessors are not compiled. User closures can still refer to the
+//!   parameter; calls simply don't exist to invoke.
 
+#[cfg(feature = "persistence")]
 use anyhow::Result;
+#[cfg(feature = "persistence")]
 use egui_winit::WindowSettings;
+#[cfg(feature = "persistence")]
 use std::{
     collections::HashMap,
-    fmt::Debug,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Feature-on: real storage backed by a RON file on disk.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "persistence")]
 struct InnerStorage {
     filepath: PathBuf,
     kv: HashMap<String, String>,
     dirty: bool,
     save_join_handle: Option<std::thread::JoinHandle<()>>,
 }
+
+#[cfg(feature = "persistence")]
 impl InnerStorage {
     fn storage_dir(app_id: &str) -> Option<PathBuf> {
         directories_next::ProjectDirs::from("", "", app_id)
@@ -111,6 +132,11 @@ impl InnerStorage {
     }
 
     fn flush(&mut self) {
+        // In-memory only (fallback when from_app_id failed) — skip disk write.
+        if self.filepath.as_os_str().is_empty() {
+            self.dirty = false;
+            return;
+        }
         if self.dirty {
             self.dirty = false;
             let kv = self.kv.clone();
@@ -146,6 +172,8 @@ impl InnerStorage {
         self.get_value(STORAGE_WINDOWS_KEY)
     }
 }
+
+#[cfg(feature = "persistence")]
 impl Drop for InnerStorage {
     fn drop(&mut self) {
         if let Some(join_handle) = self.save_join_handle.take() {
@@ -154,17 +182,71 @@ impl Drop for InnerStorage {
     }
 }
 
-#[derive(Clone)]
+#[cfg(feature = "persistence")]
+impl Default for InnerStorage {
+    fn default() -> Self {
+        // In-memory only — an empty filepath tells `flush` to skip disk I/O.
+        // Produced by `Storage::initialize` when `from_app_id` fails so the
+        // UI closure still sees a valid `Storage`.
+        Self {
+            filepath: PathBuf::new(),
+            kv: HashMap::new(),
+            dirty: false,
+            save_join_handle: None,
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Public Storage type — always available, methods feature-gated.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Persistent key/value store handed to the UI closure each frame.
+///
+/// With the `persistence` feature enabled, `set_value` / `get_value` persist
+/// user state to an on-disk RON file keyed by the `app_id` passed to
+/// [`run`](crate::run). Without the feature, this type is a zero-sized stub
+/// and those methods do not exist — calls will not compile, keeping the
+/// distinction between "persistence was configured" and "persistence is a
+/// no-op" as a compile-time fact rather than silent runtime loss.
+#[derive(Clone, Default)]
 pub struct Storage {
+    #[cfg(feature = "persistence")]
     inner: Arc<Mutex<InnerStorage>>,
 }
-impl Storage {
-    pub(crate) fn from_app_id(app_id: &str) -> Result<Self> {
-        Ok(Self {
-            inner: Arc::new(Mutex::new(InnerStorage::from_app_id(app_id)?)),
-        })
-    }
 
+impl Storage {
+    /// Unified constructor used by `run()`. With the `persistence` feature
+    /// enabled, attempts to load existing RON state from the per-app data
+    /// directory; on failure logs and falls back to an in-memory-only
+    /// store (so the UI closure still sees a valid `Storage`). Without the
+    /// feature, returns a zero-sized stub.
+    pub(crate) fn initialize(_app_id: &str) -> Self {
+        #[cfg(feature = "persistence")]
+        {
+            match InnerStorage::from_app_id(_app_id) {
+                Ok(inner) => Self {
+                    inner: Arc::new(Mutex::new(inner)),
+                },
+                Err(e) => {
+                    log::warn!(
+                        "persistence: failed to open storage for app '{}': {:?}",
+                        _app_id,
+                        e
+                    );
+                    Self::default()
+                }
+            }
+        }
+        #[cfg(not(feature = "persistence"))]
+        {
+            Self::default()
+        }
+    }
+}
+
+#[cfg(feature = "persistence")]
+impl Storage {
     pub(crate) fn flush(&self) {
         self.inner.lock().unwrap().flush();
     }
@@ -185,21 +267,42 @@ impl Storage {
         self.inner.lock().unwrap().get_windows()
     }
 
-    /// Set value to storage.
+    /// Persist a typed value under the given key.
+    ///
+    /// Serialises via RON. Serialisation failures are logged and silently
+    /// dropped — they do not propagate. Flushed to disk on shutdown, on any
+    /// `auto_save_interval` tick, or when the `Storage` is dropped.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned — i.e., a prior panic on
+    /// another thread occurred while holding it. Under normal operation
+    /// this does not happen; the background save thread does not panic.
     pub fn set_value<T: serde::Serialize>(&mut self, key: &str, value: &T) {
         self.inner.lock().unwrap().set_value(key, value);
     }
 
-    /// Get value from storage.
+    /// Load a typed value previously stored under `key`.
+    ///
+    /// Returns `None` if the key doesn't exist or if deserialization fails
+    /// (e.g. the stored shape no longer matches `T` after a schema change).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned — see [`Self::set_value`]
+    /// for details. Under normal operation this does not happen.
     pub fn get_value<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
         self.inner.lock().unwrap().get_value(key)
     }
 }
-impl Debug for Storage {
+
+impl std::fmt::Debug for Storage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Storage").finish()
     }
 }
 
+#[cfg(feature = "persistence")]
 pub(crate) const STORAGE_EGUI_MEMORY_KEY: &str = "egui_memory";
+#[cfg(feature = "persistence")]
 pub(crate) const STORAGE_WINDOWS_KEY: &str = "egui_windows";

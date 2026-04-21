@@ -49,7 +49,8 @@ fn main() -> ExitCode {
               status: &egui_ash::EngineStatus,
               ui_state: &mut ModelUiState,
               engine_state: &ModelEngineState,
-              _handle: &egui_ash::EngineHandle<ModelEngine>| {
+              _handle: &egui_ash::EngineHandle<ModelEngine>,
+              _storage: &mut egui_ash::Storage| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let mut behavior = TreeBehavior {
                     viewport_texture_id: status.viewport_texture_id,

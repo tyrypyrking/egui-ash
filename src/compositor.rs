@@ -7,7 +7,14 @@ use std::ffi::CString;
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn find_memory_type(
+/// Find a Vulkan memory type satisfying `type_bits` and `flags`.
+///
+/// # Panics
+///
+/// Panics if no compatible memory type is exposed by the device. This is a
+/// device-capability failure — all callers are in Vulkan init paths that
+/// cannot proceed without a compatible type.
+pub(crate) fn find_memory_type(
     mem_props: &vk::PhysicalDeviceMemoryProperties,
     type_bits: u32,
     flags: vk::MemoryPropertyFlags,
@@ -52,8 +59,6 @@ const ENGINE_VIEWPORT_USER_ID: u64 = u64::MAX;
 /// per-frame command buffer recording, submission, and presentation.
 pub(crate) struct Compositor {
     // Vulkan handles (cloned from caller)
-    #[allow(dead_code)]
-    instance: ash::Instance,
     device: ash::Device,
     physical_device: vk::PhysicalDevice,
     host_queue: vk::Queue,
@@ -110,6 +115,14 @@ pub(crate) struct Compositor {
     // egui managed textures
     managed_textures: HashMap<egui::TextureId, ManagedTexture>,
 
+    // User-registered textures (§5.B5 — ImageRegistry). Keyed by the raw
+    // u64 `egui::TextureId::User(n)` value. Excludes the reserved engine
+    // viewport slot at `u64::MAX`.
+    user_textures: HashMap<u64, vk::DescriptorSet>,
+    /// Receiver for user-facing texture registrations. Drained once at
+    /// the top of each `render_frame`.
+    registry_rx: std::sync::mpsc::Receiver<crate::image_registry::RegistryCommand>,
+
     // Vertex/index buffers (per frame-in-flight), HOST_VISIBLE|HOST_COHERENT
     vertex_buffers: Vec<vk::Buffer>,
     vertex_buffer_memory: Vec<vk::DeviceMemory>,
@@ -152,6 +165,7 @@ impl Compositor {
         physical_device: vk::PhysicalDevice,
         host_queue: vk::Queue,
         host_queue_family: u32,
+        registry_rx: std::sync::mpsc::Receiver<crate::image_registry::RegistryCommand>,
         surface: vk::SurfaceKHR,
         present_mode: vk::PresentModeKHR,
         queue_mutex: Option<std::sync::Arc<std::sync::Mutex<()>>>,
@@ -335,7 +349,6 @@ impl Compositor {
         let engine_viewport_texture_id = egui::TextureId::User(ENGINE_VIEWPORT_USER_ID);
 
         Self {
-            instance: instance.clone(),
             device: device.clone(),
             physical_device,
             host_queue,
@@ -377,6 +390,9 @@ impl Compositor {
             black_image_memory,
 
             managed_textures: HashMap::new(),
+
+            user_textures: HashMap::new(),
+            registry_rx,
 
             vertex_buffers,
             vertex_buffer_memory,
@@ -424,6 +440,119 @@ impl Compositor {
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    // User-texture registry (§5.B5)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Drain the user-texture registry channel: process every pending
+    /// Register / Update / Unregister command. Called once per frame
+    /// before any user-texture ID might be bound in `record_egui_commands`.
+    fn drain_registry_commands(&mut self) {
+        use crate::image_registry::RegistryCommand;
+        while let Ok(cmd) = self.registry_rx.try_recv() {
+            match cmd {
+                RegistryCommand::Register {
+                    id,
+                    image_view,
+                    sampler,
+                } => {
+                    if let Some(ds) = self.allocate_user_texture_descriptor(image_view, sampler) {
+                        if let Some(prev) = self.user_textures.insert(id, ds) {
+                            // Caller re-used an id that wasn't Unregistered first.
+                            // This isn't supposed to happen (ids are atomic-counter
+                            // issued) but free the old set defensively.
+                            unsafe {
+                                let _ = self
+                                    .device
+                                    .free_descriptor_sets(self.egui_descriptor_pool, &[prev]);
+                            }
+                        }
+                    }
+                }
+                RegistryCommand::Update {
+                    id,
+                    image_view,
+                    sampler,
+                } => {
+                    if let Some(&ds) = self.user_textures.get(&id) {
+                        unsafe {
+                            self.write_user_texture_descriptor(ds, image_view, sampler);
+                        }
+                    } else {
+                        log::warn!(
+                            "ImageRegistry::Update for unknown id {} — register first",
+                            id
+                        );
+                    }
+                }
+                RegistryCommand::Unregister { id } => {
+                    if let Some(ds) = self.user_textures.remove(&id) {
+                        unsafe {
+                            let _ = self
+                                .device
+                                .free_descriptor_sets(self.egui_descriptor_pool, &[ds]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Allocate a descriptor set from the main pool and write it with the
+    /// caller-supplied image view + sampler. Returns `None` if descriptor
+    /// allocation fails (pool exhausted).
+    fn allocate_user_texture_descriptor(
+        &self,
+        image_view: vk::ImageView,
+        sampler: vk::Sampler,
+    ) -> Option<vk::DescriptorSet> {
+        unsafe {
+            let layouts = [self.egui_descriptor_set_layout];
+            let alloc_info = vk::DescriptorSetAllocateInfo::default()
+                .descriptor_pool(self.egui_descriptor_pool)
+                .set_layouts(&layouts);
+            match self.device.allocate_descriptor_sets(&alloc_info) {
+                Ok(sets) => {
+                    let ds = sets[0];
+                    self.write_user_texture_descriptor(ds, image_view, sampler);
+                    Some(ds)
+                }
+                Err(e) => {
+                    log::error!(
+                        "ImageRegistry: descriptor allocation failed ({:?}) — dropping registration",
+                        e
+                    );
+                    None
+                }
+            }
+        }
+    }
+
+    /// Write an image+sampler into the given descriptor set.
+    ///
+    /// # Safety
+    /// `descriptor_set` must have been allocated from
+    /// `self.egui_descriptor_pool` with `self.egui_descriptor_set_layout`.
+    /// `image_view` must remain valid and in `SHADER_READ_ONLY_OPTIMAL`
+    /// layout for the duration of any frame that samples it.
+    unsafe fn write_user_texture_descriptor(
+        &self,
+        descriptor_set: vk::DescriptorSet,
+        image_view: vk::ImageView,
+        sampler: vk::Sampler,
+    ) {
+        let image_info = vk::DescriptorImageInfo::default()
+            .image_view(image_view)
+            .sampler(sampler)
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        let write = vk::WriteDescriptorSet::default()
+            .dst_set(descriptor_set)
+            .dst_binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(std::slice::from_ref(&image_info));
+        self.device.update_descriptor_sets(&[write], &[]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     // Frame rendering
     // ─────────────────────────────────────────────────────────────────────
 
@@ -456,6 +585,14 @@ impl Compositor {
                 log::error!("wait_for_fences failed: {:?}", e);
             })?;
 
+        // Drain pending user-texture registry commands. Safe here because
+        // we've just confirmed the in-flight fence for this frame index
+        // (the set of descriptors referenced by the previous submit at
+        // this index) is signalled. UPDATE_AFTER_BIND lets us modify
+        // descriptors still referenced by *other* in-flight frames, so
+        // register/update/unregister operations are lock-free.
+        self.drain_registry_commands();
+
         // Acquire next swapchain image.
         let (image_index, _suboptimal) = match self.swapchain_loader.acquire_next_image(
             self.swapchain,
@@ -469,7 +606,10 @@ impl Compositor {
                 // Caller must not commit signal_value.
                 return Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
             }
-            Err(e) => panic!("acquire_next_image failed: {:?}", e),
+            Err(e) => {
+                log::error!("acquire_next_image failed: {:?}", e);
+                return Err(e);
+            }
         };
         let image_index = image_index as usize;
 
@@ -535,8 +675,8 @@ impl Compositor {
         let signal_values = [0u64, signal_value];
         let cmd_bufs = [cmd];
 
-        let mut timeline_info = vk::TimelineSemaphoreSubmitInfo::default()
-            .signal_semaphore_values(&signal_values);
+        let mut timeline_info =
+            vk::TimelineSemaphoreSubmitInfo::default().signal_semaphore_values(&signal_values);
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(&wait_semaphores)
             .wait_dst_stage_mask(&wait_stages)
@@ -581,7 +721,10 @@ impl Compositor {
             Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => {
                 Ok(FrameOutcome::RenderedNeedsRebuild)
             }
-            Err(e) => panic!("queue_present failed: {:?}", e),
+            Err(e) => {
+                log::error!("queue_present failed: {:?}", e);
+                Err(e)
+            }
         }
     }
 
@@ -1952,6 +2095,8 @@ impl Compositor {
                     if id == ENGINE_VIEWPORT_USER_ID {
                         // Engine viewport
                         self.engine_viewport_descriptor_set
+                    } else if let Some(&ds) = self.user_textures.get(&id) {
+                        ds
                     } else {
                         log::error!("Unknown user texture id: {}", id);
                         continue;

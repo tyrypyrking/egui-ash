@@ -48,7 +48,8 @@ fn main() -> ExitCode {
               status: &egui_ash::EngineStatus,
               ui_state: &mut TriangleUiState,
               engine_state: &TriangleEngineState,
-              _handle: &egui_ash::EngineHandle<TriangleEngine>| {
+              _handle: &egui_ash::EngineHandle<TriangleEngine>,
+              _storage: &mut egui_ash::Storage| {
             egui::SidePanel::left("controls")
                 .default_width(250.0)
                 .show(ctx, |ui| {

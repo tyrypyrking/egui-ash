@@ -1,3 +1,4 @@
+use crate::compositor::find_memory_type;
 use ash::vk;
 
 pub(crate) struct RenderTargetPool {
@@ -13,9 +14,6 @@ pub(crate) struct RenderTargetPool {
     compositor_counter: u64,
     extent: vk::Extent2D,
     format: vk::Format,
-    host_queue_family: u32,
-    engine_queue_family: u32,
-    cross_family: bool,
 }
 
 impl RenderTargetPool {
@@ -25,11 +23,7 @@ impl RenderTargetPool {
         physical_device: vk::PhysicalDevice,
         extent: vk::Extent2D,
         format: vk::Format,
-        host_queue_family: u32,
-        engine_queue_family: u32,
     ) -> Self {
-        let cross_family = host_queue_family != engine_queue_family;
-
         let create_image = |dev: &ash::Device| -> (vk::Image, vk::DeviceMemory, vk::ImageView) {
             let image_info = vk::ImageCreateInfo::default()
                 .image_type(vk::ImageType::TYPE_2D)
@@ -107,9 +101,6 @@ impl RenderTargetPool {
             compositor_counter: 0,
             extent,
             format,
-            host_queue_family,
-            engine_queue_family,
-            cross_family,
         }
     }
 
@@ -124,50 +115,10 @@ impl RenderTargetPool {
         self.engine_counter += 1;
         let signal_value = self.engine_counter;
 
-        let subresource_range = vk::ImageSubresourceRange {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            base_mip_level: 0,
-            level_count: 1,
-            base_array_layer: 0,
-            layer_count: 1,
-        };
-
-        let acquire_barrier = if self.cross_family {
-            Some(
-                vk::ImageMemoryBarrier2::default()
-                    .src_stage_mask(vk::PipelineStageFlags2::NONE)
-                    .src_access_mask(vk::AccessFlags2::NONE)
-                    .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                    .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-                    .old_layout(vk::ImageLayout::UNDEFINED)
-                    .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .src_queue_family_index(self.host_queue_family)
-                    .dst_queue_family_index(self.engine_queue_family)
-                    .image(self.images[index])
-                    .subresource_range(subresource_range),
-            )
-        } else {
-            None
-        };
-
-        let release_barrier = if self.cross_family {
-            Some(
-                vk::ImageMemoryBarrier2::default()
-                    .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                    .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-                    .dst_stage_mask(vk::PipelineStageFlags2::NONE)
-                    .dst_access_mask(vk::AccessFlags2::NONE)
-                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .src_queue_family_index(self.engine_queue_family)
-                    .dst_queue_family_index(self.host_queue_family)
-                    .image(self.images[index])
-                    .subresource_range(subresource_range),
-            )
-        } else {
-            None
-        };
-
+        // Cross-queue-family ownership transfer is not yet supported
+        // (see VulkanContext docs and docs/known-limitations.md).
+        // `Host::new` asserts host_queue_family_index == engine_queue_family_index,
+        // so the barriers are always None here.
         crate::types::RenderTarget {
             image: self.images[index],
             image_view: self.image_views[index],
@@ -177,8 +128,8 @@ impl RenderTargetPool {
             wait_value,
             signal_semaphore: self.engine_timeline,
             signal_value,
-            acquire_barrier,
-            release_barrier,
+            acquire_barrier: None,
+            release_barrier: None,
         }
     }
 
@@ -223,23 +174,7 @@ impl RenderTargetPool {
             self.device.free_memory(mem, None);
         }
         self.device.destroy_semaphore(self.engine_timeline, None);
-        self.device.destroy_semaphore(self.compositor_timeline, None);
+        self.device
+            .destroy_semaphore(self.compositor_timeline, None);
     }
-}
-
-fn find_memory_type(
-    mem_props: &vk::PhysicalDeviceMemoryProperties,
-    type_bits: u32,
-    flags: vk::MemoryPropertyFlags,
-) -> u32 {
-    for i in 0..mem_props.memory_type_count {
-        if (type_bits & (1 << i)) != 0
-            && mem_props.memory_types[i as usize]
-                .property_flags
-                .contains(flags)
-        {
-            return i;
-        }
-    }
-    panic!("failed to find suitable memory type");
 }

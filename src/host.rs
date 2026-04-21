@@ -11,9 +11,11 @@ use crate::engine::EngineRenderer;
 use crate::engine_thread::{
     self, EngineHealthState, HEALTH_CRASHED, HEALTH_RUNNING, HEALTH_STARTING, HEALTH_STOPPED,
 };
+use crate::image_registry::ImageRegistry;
 use crate::mailbox::{self, MailboxReceiver};
 use crate::render_targets::RenderTargetPool;
 use crate::state_exchange::{self, StateReader, StateWriter};
+use crate::storage::Storage;
 use crate::types::{
     EngineContext, EngineHealth, EngineRestartError, EngineStatus, RunOption, VulkanContext,
 };
@@ -29,15 +31,28 @@ use crate::types::{
 /// deferred until after the UI closure returns.
 pub struct EngineHandle<E: EngineRenderer> {
     restart_request: std::cell::RefCell<Option<E>>,
+    exit_request: std::cell::RefCell<Option<std::process::ExitCode>>,
     health: Arc<EngineHealthState>,
+    image_registry: ImageRegistry,
 }
 
 impl<E: EngineRenderer> EngineHandle<E> {
-    fn new(health: Arc<EngineHealthState>) -> Self {
+    fn new(health: Arc<EngineHealthState>, image_registry: ImageRegistry) -> Self {
         Self {
             restart_request: std::cell::RefCell::new(None),
+            exit_request: std::cell::RefCell::new(None),
             health,
+            image_registry,
         }
+    }
+
+    /// Borrow the image registry for registering user-owned Vulkan
+    /// textures to display in egui panels. See [`ImageRegistry`] for the
+    /// full API. Backed by the same channel as
+    /// [`EngineContext::image_registry`], so registrations from either
+    /// thread are honoured.
+    pub fn image_registry(&self) -> &ImageRegistry {
+        &self.image_registry
     }
 
     /// Request that the engine be restarted with a fresh instance.
@@ -54,8 +69,23 @@ impl<E: EngineRenderer> EngineHandle<E> {
         Ok(())
     }
 
+    /// Request a clean app shutdown with the given exit code.
+    ///
+    /// The shutdown is deferred until after the current UI frame completes;
+    /// the event loop will then run the normal destroy path (save persisted
+    /// state, wait for engine thread, destroy Vulkan resources) before
+    /// exiting with `code`. Safe to call multiple times — only the most
+    /// recent code is retained.
+    pub fn exit(&self, code: std::process::ExitCode) {
+        *self.exit_request.borrow_mut() = Some(code);
+    }
+
     fn take_restart(&self) -> Option<E> {
         self.restart_request.borrow_mut().take()
+    }
+
+    fn take_exit(&self) -> Option<std::process::ExitCode> {
+        self.exit_request.borrow_mut().take()
     }
 }
 
@@ -111,6 +141,23 @@ pub(crate) struct Host<E: EngineRenderer> {
 
     // Exit channel
     _exit_tx: mpsc::Sender<std::process::ExitCode>,
+
+    // Persistence — Storage is always present (feature-off = stub).
+    // The two flags control whether automatic window/egui-memory save
+    // happens on shutdown; user-level `set_value` / `get_value` persist
+    // independently of the flags when the feature is enabled.
+    storage: Storage,
+    #[cfg(feature = "persistence")]
+    persistent_windows: bool,
+    #[cfg(feature = "persistence")]
+    persistent_egui_memory: bool,
+    /// `None` disables periodic flush (only save on destroy).
+    #[cfg(feature = "persistence")]
+    auto_save_interval: Option<Duration>,
+    /// Instant of the most recent auto-save flush. Used to gate the next
+    /// periodic save in `frame`.
+    #[cfg(feature = "persistence")]
+    last_auto_save: std::time::Instant,
 }
 
 impl<E: EngineRenderer> Host<E> {
@@ -126,7 +173,18 @@ impl<E: EngineRenderer> Host<E> {
         window: egui_winit::winit::window::Window,
         event_loop: &egui_winit::winit::event_loop::ActiveEventLoop,
         exit_tx: mpsc::Sender<std::process::ExitCode>,
+        storage: Storage,
     ) -> Self {
+        // 1.0.0-alpha restriction: cross-queue-family ownership transfer for
+        // the engine viewport image is not yet implemented on the host side
+        // (see docs/known-limitations.md). Reject mismatched families now
+        // rather than silently produce UB when sampling the texture.
+        assert_eq!(
+            vulkan.host_queue_family_index, vulkan.engine_queue_family_index,
+            "egui-ash 1.0.0-alpha requires host_queue_family_index == engine_queue_family_index; \
+             cross-family ownership transfer is not yet supported"
+        );
+
         // Create surface
         let surface = ash_window::create_surface(
             &vulkan.entry,
@@ -143,6 +201,11 @@ impl<E: EngineRenderer> Host<E> {
         )
         .expect("failed to create surface");
 
+        // User-texture registry channel — the compositor drains commands
+        // at the top of each frame, user code sends via its `ImageRegistry`
+        // clones obtained from `EngineHandle` or `EngineContext`.
+        let (image_registry, registry_rx) = crate::image_registry::new_pair();
+
         // Create compositor
         let initial_inner = window.inner_size();
         let compositor = Compositor::new(
@@ -152,6 +215,7 @@ impl<E: EngineRenderer> Host<E> {
             vulkan.physical_device,
             vulkan.host_queue,
             vulkan.host_queue_family_index,
+            registry_rx,
             surface,
             options.present_mode,
             vulkan.queue_mutex.clone(),
@@ -170,8 +234,6 @@ impl<E: EngineRenderer> Host<E> {
             vulkan.physical_device,
             extent,
             format,
-            vulkan.host_queue_family_index,
-            vulkan.engine_queue_family_index,
         );
 
         // Create channels
@@ -186,7 +248,7 @@ impl<E: EngineRenderer> Host<E> {
 
         // Health
         let health = EngineHealthState::new();
-        let engine_handle = EngineHandle::new(Arc::clone(&health));
+        let engine_handle = EngineHandle::new(Arc::clone(&health), image_registry.clone());
 
         // Engine context
         let engine_ctx = EngineContext {
@@ -196,6 +258,7 @@ impl<E: EngineRenderer> Host<E> {
             initial_extent: extent,
             format,
             queue_mutex: vulkan.queue_mutex.clone(),
+            image_registry: image_registry.clone(),
         };
 
         // Spawn engine thread
@@ -234,6 +297,16 @@ impl<E: EngineRenderer> Host<E> {
             None,
         );
 
+        // Restore persisted egui memory (collapsed panels, scroll state, etc.)
+        // before the first frame runs. Safe to do after egui_winit::State::new —
+        // memory lives on the Context, not the winit state.
+        #[cfg(feature = "persistence")]
+        if options.persistent_egui_memory {
+            if let Some(mem) = storage.get_egui_memory() {
+                context.memory_mut(|m| *m = mem);
+            }
+        }
+
         Self {
             vulkan,
             window,
@@ -255,6 +328,15 @@ impl<E: EngineRenderer> Host<E> {
             clear_color: options.clear_color,
             surface,
             _exit_tx: exit_tx,
+            storage,
+            #[cfg(feature = "persistence")]
+            persistent_windows: options.persistent_windows,
+            #[cfg(feature = "persistence")]
+            persistent_egui_memory: options.persistent_egui_memory,
+            #[cfg(feature = "persistence")]
+            auto_save_interval: options.auto_save_interval,
+            #[cfg(feature = "persistence")]
+            last_auto_save: std::time::Instant::now(),
         }
     }
 
@@ -270,6 +352,7 @@ impl<E: EngineRenderer> Host<E> {
             &mut E::UiState,
             &E::EngineState,
             &EngineHandle<E>,
+            &mut Storage,
         ),
     ) {
         // ── 1. Check for new engine frame ──────────────────────────────────
@@ -374,6 +457,7 @@ impl<E: EngineRenderer> Host<E> {
                 &mut self.ui_state,
                 &engine_state,
                 &self.engine_handle,
+                &mut self.storage,
             );
         });
 
@@ -387,6 +471,30 @@ impl<E: EngineRenderer> Host<E> {
 
         self.egui_winit_state
             .handle_platform_output(&self.window, platform_output);
+
+        // ── 5b. Periodic auto-save flush (crash safety) ────────────────────
+        // Captures current window geometry and egui memory into the Storage
+        // in-memory store and flushes the RON file if the interval elapsed.
+        // `flush()` is a no-op when nothing was written since the last flush
+        // (Storage tracks a dirty bit), so repeated calls are cheap.
+        #[cfg(feature = "persistence")]
+        if let Some(interval) = self.auto_save_interval {
+            if self.last_auto_save.elapsed() >= interval {
+                if self.persistent_windows {
+                    let zoom = self.context.zoom_factor();
+                    let settings = egui_winit::WindowSettings::from_window(zoom, &self.window);
+                    let mut map = std::collections::HashMap::new();
+                    map.insert(egui::ViewportId::ROOT, settings);
+                    self.storage.set_windows(&map);
+                }
+                if self.persistent_egui_memory {
+                    let mem = self.context.memory(|m| m.clone());
+                    self.storage.set_egui_memory(&mem);
+                }
+                self.storage.flush();
+                self.last_auto_save = std::time::Instant::now();
+            }
+        }
 
         // ── 6. Publish UI state ────────────────────────────────────────────
         self.ui_state_writer.publish(self.ui_state.clone());
@@ -439,10 +547,12 @@ impl<E: EngineRenderer> Host<E> {
         // ── 9. Commit signal value / handle swapchain rebuild ──────────────
         match result {
             Ok(crate::compositor::FrameOutcome::Rendered) => {
-                self.render_target_pool.commit_compositor_signal(signal_value);
+                self.render_target_pool
+                    .commit_compositor_signal(signal_value);
             }
             Ok(crate::compositor::FrameOutcome::RenderedNeedsRebuild) => {
-                self.render_target_pool.commit_compositor_signal(signal_value);
+                self.render_target_pool
+                    .commit_compositor_signal(signal_value);
                 self.compositor.recreate_swapchain();
             }
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
@@ -452,7 +562,10 @@ impl<E: EngineRenderer> Host<E> {
                 self.compositor.recreate_swapchain();
             }
             Err(e) => {
-                eprintln!("[egui-ash] render_frame failed: {:?}", e);
+                // Generic Vulkan error from submit/present (device loss,
+                // out-of-memory, etc). Compositor already logged it;
+                // attempt to rebuild the swapchain on next frame.
+                log::error!("render_frame failed: {:?}", e);
             }
         }
 
@@ -460,6 +573,53 @@ impl<E: EngineRenderer> Host<E> {
         // Always request redraw — the engine is continuously producing frames
         // and the UI needs to stay responsive.
         self.window.request_redraw();
+    }
+
+    /// Pending exit code requested by the UI closure via
+    /// `EngineHandle::exit`. Returns `None` if no exit was requested this
+    /// frame. Taking consumes the request.
+    pub(crate) fn take_exit_request(&self) -> Option<std::process::ExitCode> {
+        self.engine_handle.take_exit()
+    }
+
+    /// Forward a winit `DeviceEvent` to the engine thread. Best-effort —
+    /// if the channel is closed (engine has exited) the event is dropped.
+    pub(crate) fn handle_device_event(&self, event: egui_winit::winit::event::DeviceEvent) {
+        let _ = self.event_tx.send(crate::event::EngineEvent::Device(event));
+    }
+
+    /// Forward an application lifecycle event to the engine thread.
+    /// Best-effort — dropped if the channel is closed.
+    pub(crate) fn handle_lifecycle_event(&self, event: crate::event::AppLifecycleEvent) {
+        let _ = self
+            .event_tx
+            .send(crate::event::EngineEvent::Lifecycle(event));
+    }
+
+    /// Wire egui-winit's AccessKit adapter to the winit event-loop proxy.
+    /// Must be called once after construction so screen readers see egui
+    /// widgets. Without this, `egui-winit/accesskit` compiles but delivers
+    /// nothing — the adapter defaults to `None`.
+    #[cfg(feature = "accesskit")]
+    pub(crate) fn init_accesskit(
+        &mut self,
+        event_loop: &egui_winit::winit::event_loop::ActiveEventLoop,
+        proxy: egui_winit::winit::event_loop::EventLoopProxy<crate::run::UserEvent>,
+    ) {
+        self.egui_winit_state
+            .init_accesskit(event_loop, &self.window, proxy);
+    }
+
+    /// Deliver an AccessKit action request (from winit's user_event channel)
+    /// to the egui-winit state. Actions originated by screen readers — e.g.,
+    /// "click this button", "focus this input" — reach egui widgets this way.
+    #[cfg(feature = "accesskit")]
+    pub(crate) fn handle_accesskit_event(&mut self, event: &egui_winit::accesskit_winit::Event) {
+        use egui_winit::accesskit_winit::WindowEvent;
+        if let WindowEvent::ActionRequested(request) = &event.window_event {
+            self.egui_winit_state
+                .on_accesskit_action_request(request.clone());
+        }
     }
 
     /// Handle a winit window event. Returns `true` if egui consumed the event.
@@ -496,6 +656,12 @@ impl<E: EngineRenderer> Host<E> {
                 // loop won't get ERROR_OUT_OF_DATE_KHR, so we must rebuild here.
                 let current = self.compositor.swapchain_extent();
                 if current.width != new_extent.width || current.height != new_extent.height {
+                    // SAFETY: `recreate_swapchain` internally issues
+                    // `device_wait_idle` before destroying any resources, so
+                    // no in-flight command buffers reference the old
+                    // framebuffers, image views, or swapchain at the point of
+                    // destruction. Called from the single-threaded event loop,
+                    // so no concurrent submits are in progress.
                     unsafe {
                         self.compositor.recreate_swapchain();
                     }
@@ -554,8 +720,6 @@ impl<E: EngineRenderer> Host<E> {
             self.vulkan.physical_device,
             extent,
             format,
-            self.vulkan.host_queue_family_index,
-            self.vulkan.engine_queue_family_index,
         );
         self.render_target_pool.destroy();
         self.render_target_pool = new_pool;
@@ -573,9 +737,12 @@ impl<E: EngineRenderer> Host<E> {
         let (engine_state_writer, engine_state_reader) =
             state_exchange::state_exchange::<E::EngineState>();
 
-        // 8. New health state and engine handle.
+        // 8. New health state and engine handle. Reuse the existing
+        // ImageRegistry clone so user-registered textures survive restart
+        // — the compositor and the channel are unchanged.
         let health = EngineHealthState::new();
-        let engine_handle = EngineHandle::new(Arc::clone(&health));
+        let image_registry = self.engine_handle.image_registry.clone();
+        let engine_handle = EngineHandle::new(Arc::clone(&health), image_registry.clone());
 
         // 9. Spawn new engine thread.
         let engine_ctx = EngineContext {
@@ -585,6 +752,7 @@ impl<E: EngineRenderer> Host<E> {
             initial_extent: extent,
             format,
             queue_mutex: self.vulkan.queue_mutex.clone(),
+            image_registry,
         };
         let engine_join = engine_thread::spawn_engine_thread(
             engine,
@@ -621,6 +789,30 @@ impl<E: EngineRenderer> Host<E> {
     /// # Safety
     /// Caller must ensure the Vulkan device is valid and no GPU work is in flight.
     pub(crate) unsafe fn destroy(&mut self) {
+        // Save persisted state BEFORE tearing down. Both window geometry
+        // (from the live winit window) and egui memory (from the context)
+        // need to be captured while their sources are still valid. Any
+        // user-level values written via `Storage::set_value` during the
+        // session are flushed here too.
+        #[cfg(feature = "persistence")]
+        {
+            if self.persistent_windows {
+                let zoom = self.context.zoom_factor();
+                let settings = egui_winit::WindowSettings::from_window(zoom, &self.window);
+                let mut map = std::collections::HashMap::new();
+                map.insert(egui::ViewportId::ROOT, settings);
+                self.storage.set_windows(&map);
+            }
+            if self.persistent_egui_memory {
+                let mem = self.context.memory(|m| m.clone());
+                self.storage.set_egui_memory(&mem);
+            }
+            // Blocking flush — the Drop impl on InnerStorage waits on the
+            // save thread, but being explicit here guarantees disk-visible
+            // persistence before the event loop exits.
+            self.storage.flush();
+        }
+
         // Signal engine to shut down.
         let _ = self.event_tx.send(crate::event::EngineEvent::Shutdown);
 
