@@ -91,6 +91,23 @@ impl<E: EngineRenderer> EngineHandle<E> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PendingDestroy — deferred-destruction queue entry (B9 decision #3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A Viewport awaiting GPU drain before destruction. When a non-root
+/// viewport is abandoned by egui (user stopped show_viewport_deferred,
+/// or non-root CloseRequested fires), we pull it out of the active
+/// `Host::viewports` map and park it here along with a snapshot of its
+/// compositor's in-flight fences. Each frame the host polls those
+/// fences with `vkGetFenceStatus`; when all are signalled, no command
+/// buffer still references the viewport's resources and `destroy()`
+/// is safe without `device_wait_idle`.
+struct PendingDestroy {
+    viewport: crate::viewport::Viewport,
+    fences: Vec<vk::Fence>,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // HostPtr — raw-pointer wrapper for egui's immediate-viewport renderer
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -154,6 +171,14 @@ pub(crate) struct Host<E: EngineRenderer> {
     // Populated when a viewport is created; pruned on close. Kept in
     // sync with `viewports` as a strict invariant.
     window_id_to_viewport: HashMap<WindowId, egui::ViewportId>,
+
+    // Deferred-destruction queue (B9 decision #3). Viewports that egui
+    // no longer reports go here with a snapshot of their compositor's
+    // in-flight fences; `poll_pending_destruction` checks those fences
+    // each frame and destroys entries whose GPU work has drained. Zero-
+    // stall happy path — avoids the inline `device_wait_idle` on every
+    // pop-out close.
+    pending_destruction: Vec<PendingDestroy>,
 
     // Focused viewport — tracked so host-global operations can target
     // the right window. Currently always ROOT; populated for real when
@@ -257,6 +282,59 @@ impl<E: EngineRenderer> Host<E> {
             match view {
                 Some(v) => vp.compositor.set_engine_viewport(v),
                 None => vp.compositor.set_engine_viewport_black(),
+            }
+        }
+    }
+
+    /// Move a non-root Viewport out of `self.viewports` and onto the
+    /// deferred-destruction queue. Its compositor may still have
+    /// command buffers in flight referencing its swapchain / pipelines;
+    /// `poll_pending_destruction` cleans it up once the per-frame
+    /// fence poll confirms all of them have signalled (B9 decision #3).
+    ///
+    /// # Panics
+    /// Panics if asked to retire ROOT — ROOT has a different teardown
+    /// path (single `device_wait_idle` in `Host::destroy`, decision #4).
+    fn retire_viewport(&mut self, id: egui::ViewportId) {
+        assert_ne!(
+            id,
+            egui::ViewportId::ROOT,
+            "retire_viewport called on ROOT — ROOT is torn down via Host::destroy"
+        );
+        let Some(vp) = self.viewports.remove(&id) else {
+            return;
+        };
+        let window_id = vp.window.id();
+        self.window_id_to_viewport.remove(&window_id);
+        let fences = vp.compositor.in_flight_fences_snapshot();
+        self.pending_destruction.push(PendingDestroy {
+            viewport: vp,
+            fences,
+        });
+    }
+
+    /// Poll the deferred-destruction queue: for each entry whose
+    /// compositor fences have all signalled, destroy the viewport.
+    /// Entries with any unsignalled fence stay parked until next frame.
+    /// Called once per frame from `Host::frame`.
+    ///
+    /// # Safety
+    /// Must run on the main (Vulkan-owning) thread with no concurrent
+    /// Vulkan activity on the retired compositors' resources.
+    unsafe fn poll_pending_destruction(&mut self) {
+        let mut i = 0;
+        while i < self.pending_destruction.len() {
+            let all_signalled = self.pending_destruction[i]
+                .fences
+                .iter()
+                .all(|&f| self.vulkan.device.get_fence_status(f).unwrap_or(true));
+            if all_signalled {
+                let mut entry = self.pending_destruction.swap_remove(i);
+                entry.viewport.destroy(&self.vulkan);
+                // swap_remove replaces [i] with the last element — do
+                // NOT advance `i`; the new [i] also needs polling.
+            } else {
+                i += 1;
             }
         }
     }
@@ -434,6 +512,7 @@ impl<E: EngineRenderer> Host<E> {
             engine_target_index: Some(0), // index 0 was sent to engine
             composited_target_index: None,
             current_engine_view: None,
+            pending_destruction: Vec::new(),
             ui_state: E::UiState::default(),
             clear_color: options.clear_color,
             _exit_tx: exit_tx,
@@ -470,6 +549,12 @@ impl<E: EngineRenderer> Host<E> {
             &mut Storage,
         ),
     ) {
+        // ── 0. Deferred-destruction sweep ─────────────────────────────────
+        // Reclaim viewports whose abandoned-submit fences have all
+        // signalled (B9 decision #3). Cheap: one `vkGetFenceStatus`
+        // per fence per pending entry, no pipeline stall.
+        self.poll_pending_destruction();
+
         // ── 1. Check for new engine frame ──────────────────────────────────
         if let Some(completed) = self.frame_rx.try_recv() {
             // CPU-wait on the engine timeline for the engine's signal_value.
@@ -737,22 +822,12 @@ impl<E: EngineRenderer> Host<E> {
             .copied()
             .filter(|id| *id != egui::ViewportId::ROOT && !viewport_output.contains_key(id))
             .collect();
-        if !to_remove.is_empty() {
-            // Inline destruction for the alpha; step 7 replaces this
-            // with the fence-poll deferred-destruction queue (decision
-            // #3) so we don't stall the main thread on abandoned
-            // viewports. `device_wait_idle` is the safe hammer.
-            self.vulkan
-                .device
-                .device_wait_idle()
-                .expect("device_wait_idle failed");
-            for id in to_remove {
-                if let Some(mut vp) = self.viewports.remove(&id) {
-                    let wid = vp.window.id();
-                    self.window_id_to_viewport.remove(&wid);
-                    vp.destroy(&self.vulkan);
-                }
-            }
+        for id in to_remove {
+            // Zero-stall retirement: the viewport moves to
+            // `pending_destruction` with a fence snapshot; actual
+            // teardown happens in a later frame once all its compositor
+            // submits have signalled (decision #3).
+            self.retire_viewport(id);
         }
 
         // ---- Render deferred viewports --------------------------------
@@ -1341,7 +1416,15 @@ impl<E: EngineRenderer> Host<E> {
 
         self.render_target_pool.destroy();
 
-        // Destroy non-root viewports first, root last.
+        // Drain any still-pending retired viewports. After the
+        // device_wait_idle above all fences are signalled, so destroy
+        // is unconditionally safe — no need to re-poll.
+        for mut entry in self.pending_destruction.drain(..) {
+            entry.viewport.destroy(&self.vulkan);
+        }
+
+        // Destroy remaining non-root viewports first, root last
+        // (decision #4 reverse-insertion-order teardown).
         let root = self.viewports.remove(&egui::ViewportId::ROOT);
         for (_, mut vp) in self.viewports.drain() {
             vp.destroy(&self.vulkan);

@@ -869,6 +869,19 @@ impl Compositor {
         self.swapchain_extent
     }
 
+    /// Snapshot of this compositor's in-flight fence handles, used by
+    /// the B9 deferred-destruction queue (decision #3). Caller polls
+    /// each handle with `vkGetFenceStatus` every frame; when ALL are
+    /// signalled, no command buffer still references this compositor's
+    /// resources and `destroy()` is safe to call without `device_wait_idle`.
+    ///
+    /// Returns owned `Vec<vk::Fence>` because the fences are trivial
+    /// Copy handles — no lifetime tie-in with the Compositor beyond
+    /// validity until its `destroy()`.
+    pub(crate) fn in_flight_fences_snapshot(&self) -> Vec<vk::Fence> {
+        self.in_flight_fences.clone()
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // Cleanup
     // ─────────────────────────────────────────────────────────────────────
