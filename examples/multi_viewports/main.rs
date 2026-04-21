@@ -2,7 +2,7 @@
 //! demo onto the v2 API. Drops v1's per-viewport custom Vulkan
 //! rendering (Category A4, retired) and substitutes the host-
 //! broadcast engine texture so every pop-out still shows live engine
-//! output — in this demo a rotating Suzanne from `ModelEngine`.
+//! output — in this demo a rotating Suzanne from `TriangleEngine`.
 //!
 //! Exercises:
 //! - `egui::Context::show_viewport_immediate` spawning a pop-out window.
@@ -26,9 +26,9 @@ use egui_ash::{EngineHandle, EngineStatus, RunOption};
 mod common;
 use common::vkutils;
 
-#[path = "../common/model_engine.rs"]
-mod model_engine;
-use model_engine::{ModelEngine, ModelEngineState, ModelUiState};
+#[path = "../common/triangle_engine.rs"]
+mod triangle_engine;
+use triangle_engine::{TriangleEngine, TriangleEngineState, TriangleUiState};
 
 /// Shared state read / written by every viewport's UI callback. The
 /// deferred-viewport callback is stored `Fn + Send + Sync + 'static`, so
@@ -51,7 +51,8 @@ impl Shared {
             text: "edit me — shared across all viewports".to_string(),
             rotate_y: 0.0,
             auto_rotate: true,
-            bg_color: [0.0, 0.2, 0.4],
+            // Matches v1 multi_viewports' triangle renderer clear color.
+            bg_color: [0.5, 0.1, 0.1],
             show_immediate: false,
             show_deferred: false,
         }
@@ -93,7 +94,7 @@ fn engine_block(ui: &mut egui::Ui, s: &mut Shared) {
 fn main() -> ExitCode {
     let (vulkan, _resources) = vkutils::create_vulkan_context("multi_viewports");
 
-    let engine = ModelEngine::new(&vulkan.instance, vulkan.physical_device);
+    let engine = TriangleEngine::new(vulkan.instance.clone(), vulkan.physical_device);
 
     let options = RunOption {
         present_mode: vk::PresentModeKHR::FIFO,
@@ -117,9 +118,9 @@ fn main() -> ExitCode {
         options,
         move |ctx: &egui::Context,
               status: &EngineStatus,
-              ui_state: &mut ModelUiState,
-              _engine_state: &ModelEngineState,
-              _handle: &EngineHandle<ModelEngine>,
+              ui_state: &mut TriangleUiState,
+              _engine_state: &TriangleEngineState,
+              _handle: &EngineHandle<TriangleEngine>,
               _storage: &mut egui_ash::Storage| {
             let engine_tex = status.viewport_texture_id;
 
@@ -250,10 +251,12 @@ fn main() -> ExitCode {
                                 ui.separator();
                                 content_block(ui, &mut s, "theme_combo_deferred");
                             });
-                        egui::CentralPanel::default().show(ctx, |ui| {
-                            let available = ui.available_size();
-                            ui.image(egui::load::SizedTexture::new(engine_tex, available));
-                        });
+                        egui::CentralPanel::default()
+                            .frame(egui::Frame::NONE)
+                            .show(ctx, |ui| {
+                                let available = ui.available_size();
+                                ui.image(egui::load::SizedTexture::new(engine_tex, available));
+                            });
                     },
                 );
             }

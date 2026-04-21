@@ -217,6 +217,17 @@ pub(crate) struct Host<E: EngineRenderer> {
     // created child viewports can be sync'd to the current state.
     current_engine_view: Option<vk::ImageView>,
 
+    // Compacted snapshot of every egui-managed texture currently live,
+    // keyed by TextureId. Updated by `broadcast_texture_delta`. Used by
+    // `seed_new_compositor` to replay the full texture state into a
+    // newly-created child compositor — without this, children born
+    // after the first font-atlas upload would have an empty managed-
+    // texture table and text primitives would drop silently.
+    //
+    // ImageData inside ImageDelta is Arc-backed, so Clone is cheap
+    // (one ref-count bump for the font atlas, not a 4MB copy).
+    texture_snapshot: HashMap<egui::TextureId, egui::epaint::ImageDelta>,
+
     // Persistent UI state (survives across frames)
     ui_state: E::UiState,
 
@@ -281,8 +292,47 @@ impl<E: EngineRenderer> Host<E> {
         if delta.set.is_empty() && delta.free.is_empty() {
             return;
         }
+        // Merge delta into the compacted snapshot so new child
+        // compositors created later can be seeded with current state.
+        for (id, image_delta) in &delta.set {
+            self.texture_snapshot.insert(*id, image_delta.clone());
+        }
+        for id in &delta.free {
+            self.texture_snapshot.remove(id);
+        }
+        // Broadcast to every live compositor.
         for vp in self.viewports.values_mut() {
             vp.compositor.apply_texture_delta_external(delta);
+        }
+    }
+
+    /// Seed a newly-created child compositor's managed-texture table
+    /// with every texture currently live in `self.texture_snapshot`.
+    /// Fixes the "deferred viewport born AFTER ROOT's atlas upload"
+    /// issue: egui only emits a managed-texture delta ONCE per
+    /// texture, so children created later never see the atlas through
+    /// the per-frame broadcast alone.
+    ///
+    /// # Safety
+    /// Vulkan device must be valid; `id` must be present in
+    /// `self.viewports`. Runs on the main thread after the child
+    /// viewport is inserted, before its first `render_frame`.
+    unsafe fn seed_new_compositor(&mut self, id: egui::ViewportId) {
+        if self.texture_snapshot.is_empty() {
+            return;
+        }
+        // Synthetic delta from the snapshot. Arc-backed ImageData
+        // clones are cheap (ref-count bump, not a pixel copy).
+        let synthetic = egui::TexturesDelta {
+            set: self
+                .texture_snapshot
+                .iter()
+                .map(|(id, d)| (*id, d.clone()))
+                .collect(),
+            free: Vec::new(),
+        };
+        if let Some(vp) = self.viewports.get_mut(&id) {
+            vp.compositor.apply_texture_delta_external(&synthetic);
         }
     }
 
@@ -535,6 +585,7 @@ impl<E: EngineRenderer> Host<E> {
             engine_target_index: Some(0), // index 0 was sent to engine
             composited_target_index: None,
             current_engine_view: None,
+            texture_snapshot: HashMap::new(),
             pending_destruction: Vec::new(),
             ui_state: E::UiState::default(),
             clear_color: options.clear_color,
@@ -910,6 +961,9 @@ impl<E: EngineRenderer> Host<E> {
                 self.window_id_to_viewport.insert(window_id, id);
                 // Sync to current engine image (B9 decision #2).
                 self.sync_child_engine_viewport(id);
+                // Seed managed-texture table with current state so
+                // text renders immediately on the first frame.
+                self.seed_new_compositor(id);
             }
 
             // Take this viewport's raw input.
@@ -949,12 +1003,6 @@ impl<E: EngineRenderer> Host<E> {
 
             let sc_extent = vp.compositor.swapchain_extent();
             let screen_size = [sc_extent.width, sc_extent.height];
-            // pixels_per_point comes from this viewport's `ctx.run`
-            // so it's this window's DPI × zoom_factor. Deriving
-            // scale_factor from `ctx.viewport_rect()` would use
-            // whatever viewport is "current" in egui's internal
-            // state after `ctx.run` returns — which may be ROOT for
-            // a nested run — and miscompute the scale.
             let scale_factor = pixels_per_point;
 
             // Child viewports pass `None` for engine_signal (see
@@ -1344,6 +1392,12 @@ impl<E: EngineRenderer> Host<E> {
             // the engine viewport renders in this window too (B9
             // decision #2).
             self.sync_child_engine_viewport(id);
+            // Replay every currently-live egui managed texture into
+            // this compositor's table (font atlas + any user-loaded
+            // managed textures). Without this, a child born after
+            // ROOT's first atlas upload would silently drop text
+            // primitives because its managed-texture table is empty.
+            self.seed_new_compositor(id);
         }
 
         // Take this viewport's pending winit input.
