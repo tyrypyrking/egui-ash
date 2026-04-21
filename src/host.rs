@@ -1,12 +1,12 @@
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use ash::vk;
-use raw_window_handle::{HasDisplayHandle as _, HasWindowHandle as _};
+use egui_winit::winit::window::WindowId;
 
-use crate::compositor::Compositor;
 use crate::engine::EngineRenderer;
 use crate::engine_thread::{
     self, EngineHealthState, HEALTH_CRASHED, HEALTH_RUNNING, HEALTH_STARTING, HEALTH_STOPPED,
@@ -19,6 +19,7 @@ use crate::storage::Storage;
 use crate::types::{
     EngineContext, EngineHealth, EngineRestartError, EngineStatus, RunOption, VulkanContext,
 };
+use crate::viewport::Viewport;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EngineHandle — public API for restarting the engine from the UI closure
@@ -99,13 +100,26 @@ pub(crate) struct Host<E: EngineRenderer> {
     // Vulkan context (owned)
     vulkan: VulkanContext,
 
-    // Window + egui
-    window: egui_winit::winit::window::Window,
+    // Shared egui context — one per Host, shared across all viewports.
     context: egui::Context,
-    egui_winit_state: egui_winit::State,
 
-    // Compositor (swapchain + egui rendering)
-    compositor: Compositor,
+    // Per-egui-viewport state: window + egui-winit adapter + compositor +
+    // surface. ROOT is always present. Non-root entries appear/disappear
+    // as egui spawns immediate or deferred viewports (§B9; multi-viewport
+    // steps still to come — at this step the map size is always 1).
+    viewports: HashMap<egui::ViewportId, Viewport>,
+
+    // Reverse index for routing winit WindowEvents by WindowId.
+    // Populated when a viewport is created; pruned on close. Kept in
+    // sync with `viewports` as a strict invariant.
+    #[allow(dead_code)]
+    window_id_to_viewport: HashMap<WindowId, egui::ViewportId>,
+
+    // Focused viewport — tracked so host-global operations can target
+    // the right window. Currently always ROOT; populated for real when
+    // focus events are routed per-viewport in later steps.
+    #[allow(dead_code)]
+    focused_viewport: Option<egui::ViewportId>,
 
     // Render target pool (double-buffered images shared with engine)
     render_target_pool: RenderTargetPool,
@@ -136,9 +150,6 @@ pub(crate) struct Host<E: EngineRenderer> {
     // Options
     clear_color: [f32; 4],
 
-    // Surface (for cleanup)
-    surface: vk::SurfaceKHR,
-
     // Exit channel
     _exit_tx: mpsc::Sender<std::process::ExitCode>,
 
@@ -161,6 +172,24 @@ pub(crate) struct Host<E: EngineRenderer> {
 }
 
 impl<E: EngineRenderer> Host<E> {
+    /// Borrow the ROOT viewport.
+    ///
+    /// # Panics
+    /// Panics if ROOT has been removed. ROOT is inserted in `new` and
+    /// removed last in `destroy`; no other code path may remove it.
+    fn root(&self) -> &Viewport {
+        self.viewports
+            .get(&egui::ViewportId::ROOT)
+            .expect("ROOT viewport invariant violated")
+    }
+
+    /// Borrow the ROOT viewport mutably. Same invariant as [`Self::root`].
+    fn root_mut(&mut self) -> &mut Viewport {
+        self.viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .expect("ROOT viewport invariant violated")
+    }
+
     /// Create a new Host, spawning the engine thread.
     ///
     /// # Safety
@@ -185,48 +214,43 @@ impl<E: EngineRenderer> Host<E> {
              cross-family ownership transfer is not yet supported"
         );
 
-        // Create surface
-        let surface = ash_window::create_surface(
-            &vulkan.entry,
-            &vulkan.instance,
-            window
-                .display_handle()
-                .expect("failed to get display handle")
-                .as_raw(),
-            window
-                .window_handle()
-                .expect("failed to get window handle")
-                .as_raw(),
-            None,
-        )
-        .expect("failed to create surface");
-
-        // User-texture registry channel — the compositor drains commands
-        // at the top of each frame, user code sends via its `ImageRegistry`
-        // clones obtained from `EngineHandle` or `EngineContext`.
+        // User-texture registry channel — the ROOT compositor drains
+        // commands at the top of each frame. Per B9 decision #8, user
+        // textures render in ROOT only for the alpha; non-root compositors
+        // (added in later steps) receive a pre-closed dummy channel.
         let (image_registry, registry_rx) = crate::image_registry::new_pair();
 
-        // Create compositor
-        let initial_inner = window.inner_size();
-        let compositor = Compositor::new(
-            &vulkan.entry,
-            &vulkan.instance,
-            &vulkan.device,
-            vulkan.physical_device,
-            vulkan.host_queue,
-            vulkan.host_queue_family_index,
-            registry_rx,
-            surface,
-            options.present_mode,
-            vulkan.queue_mutex.clone(),
-            vk::Extent2D {
-                width: initial_inner.width,
-                height: initial_inner.height,
-            },
-        );
+        // Shared egui context — created BEFORE the ROOT viewport so the
+        // viewport's egui-winit adapter can clone it.
+        let context = egui::Context::default();
+        let theme = if options.follow_system_theme {
+            window.theme().or(Some(options.default_theme))
+        } else {
+            Some(options.default_theme)
+        };
 
-        // Create render target pool
-        let extent = compositor.swapchain_extent();
+        // Derive the initial ViewportBuilder from user options so the ROOT
+        // viewport carries it for later persistence/update passes.
+        let builder = options
+            .viewport_builder
+            .clone()
+            .unwrap_or_else(|| egui::ViewportBuilder::default().with_title("egui-ash"));
+
+        let root_viewport = Viewport::new_root(
+            &vulkan,
+            event_loop,
+            window,
+            builder,
+            &context,
+            theme,
+            options.present_mode,
+            registry_rx,
+        );
+        let root_window_id = root_viewport.window.id();
+
+        // Render target pool uses the compositor's actual swapchain extent
+        // (may differ from `window.inner_size()` after surface-caps clamp).
+        let extent = root_viewport.compositor.swapchain_extent();
         let format = vk::Format::B8G8R8A8_UNORM;
         let render_target_pool = RenderTargetPool::new(
             &vulkan.instance,
@@ -236,7 +260,7 @@ impl<E: EngineRenderer> Host<E> {
             format,
         );
 
-        // Create channels
+        // Channels
         let (target_tx, target_rx) = mailbox::target_channel();
         let (frame_tx, frame_rx) = mailbox::mailbox();
         let (event_tx, event_rx) = mpsc::channel();
@@ -280,26 +304,9 @@ impl<E: EngineRenderer> Host<E> {
             .send(first_target)
             .expect("failed to send initial render target");
 
-        // Create egui context and winit state
-        let context = egui::Context::default();
-        let theme = if options.follow_system_theme {
-            window.theme().or(Some(options.default_theme))
-        } else {
-            Some(options.default_theme)
-        };
-
-        let egui_winit_state = egui_winit::State::new(
-            context.clone(),
-            egui::ViewportId::ROOT,
-            event_loop,
-            Some(window.scale_factor() as f32),
-            theme,
-            None,
-        );
-
         // Restore persisted egui memory (collapsed panels, scroll state, etc.)
-        // before the first frame runs. Safe to do after egui_winit::State::new —
-        // memory lives on the Context, not the winit state.
+        // before the first frame runs. Safe to do after the viewport is
+        // constructed — memory lives on the Context, not the winit state.
         #[cfg(feature = "persistence")]
         if options.persistent_egui_memory {
             if let Some(mem) = storage.get_egui_memory() {
@@ -307,12 +314,18 @@ impl<E: EngineRenderer> Host<E> {
             }
         }
 
+        // Assemble the viewport map + WindowId reverse index.
+        let mut viewports = HashMap::new();
+        viewports.insert(egui::ViewportId::ROOT, root_viewport);
+        let mut window_id_to_viewport = HashMap::new();
+        window_id_to_viewport.insert(root_window_id, egui::ViewportId::ROOT);
+
         Self {
             vulkan,
-            window,
             context,
-            egui_winit_state,
-            compositor,
+            viewports,
+            window_id_to_viewport,
+            focused_viewport: Some(egui::ViewportId::ROOT),
             render_target_pool,
             target_tx,
             frame_rx,
@@ -326,7 +339,6 @@ impl<E: EngineRenderer> Host<E> {
             composited_target_index: None,
             ui_state: E::UiState::default(),
             clear_color: options.clear_color,
-            surface,
             _exit_tx: exit_tx,
             storage,
             #[cfg(feature = "persistence")]
@@ -370,37 +382,30 @@ impl<E: EngineRenderer> Host<E> {
                 .expect("wait_semaphores failed");
 
             // Figure out which target index the engine just finished.
-            // The completed frame's image tells us which pool image it used.
             let finished_index = if completed.image == self.render_target_pool.image(0) {
                 0
             } else {
                 1
             };
 
-            // Update compositor to sample this image
-            self.compositor
-                .set_engine_viewport(self.render_target_pool.image_view(finished_index));
+            // Update ROOT compositor to sample this image. Non-root
+            // compositors get the same update in step 8 (decision #2).
+            let image_view = self.render_target_pool.image_view(finished_index);
+            self.root_mut().compositor.set_engine_viewport(image_view);
 
             // Send the next render target to the engine.
-            // - Normal case: reclaim the previously composited target.
-            // - First frame: no previous target exists, send the other pool slot.
             let send_index = if let Some(prev) = self.composited_target_index {
                 prev
-            } else {
+            } else if finished_index == 0 {
                 // First engine frame — the other target is free.
-                if finished_index == 0 {
-                    1
-                } else {
-                    0
-                }
+                1
+            } else {
+                0
             };
             let target = self.render_target_pool.make_target(send_index);
             // If send fails, the engine thread has exited — that's fine.
             let _ = self.target_tx.send(target);
 
-            // Track: the newly composited target is the one the engine just finished.
-            // The engine target index is now "none" (it will get a new one when we
-            // reclaim the current composited target on the next frame).
             self.composited_target_index = Some(finished_index);
             self.engine_target_index = None;
         }
@@ -410,7 +415,7 @@ impl<E: EngineRenderer> Host<E> {
         if (health_val == HEALTH_CRASHED || health_val == HEALTH_STOPPED)
             && self.composited_target_index.is_none()
         {
-            self.compositor.set_engine_viewport_black();
+            self.root_mut().compositor.set_engine_viewport_black();
         }
 
         // ── 3. Build EngineStatus ──────────────────────────────────────────
@@ -439,7 +444,7 @@ impl<E: EngineRenderer> Host<E> {
         };
         let engine_status = EngineStatus {
             health,
-            viewport_texture_id: self.compositor.engine_viewport_texture_id(),
+            viewport_texture_id: self.root().compositor.engine_viewport_texture_id(),
             frames_delivered,
             last_frame_time,
         };
@@ -448,7 +453,10 @@ impl<E: EngineRenderer> Host<E> {
         let engine_state = self.engine_state_reader.read();
 
         // ── 5. Run egui frame ──────────────────────────────────────────────
-        let raw_input = self.egui_winit_state.take_egui_input(&self.window);
+        let raw_input = {
+            let root = self.root_mut();
+            root.state.take_egui_input(&root.window)
+        };
 
         let full_output = self.context.run(raw_input, |ctx| {
             ui(
@@ -469,8 +477,11 @@ impl<E: EngineRenderer> Host<E> {
             viewport_output: _,
         } = full_output;
 
-        self.egui_winit_state
-            .handle_platform_output(&self.window, platform_output);
+        {
+            let root = self.root_mut();
+            root.state
+                .handle_platform_output(&root.window, platform_output);
+        }
 
         // ── 5b. Periodic auto-save flush (crash safety) ────────────────────
         // Captures current window geometry and egui memory into the Storage
@@ -482,7 +493,8 @@ impl<E: EngineRenderer> Host<E> {
             if self.last_auto_save.elapsed() >= interval {
                 if self.persistent_windows {
                     let zoom = self.context.zoom_factor();
-                    let settings = egui_winit::WindowSettings::from_window(zoom, &self.window);
+                    let settings =
+                        egui_winit::WindowSettings::from_window(zoom, &self.root().window);
                     let mut map = std::collections::HashMap::new();
                     map.insert(egui::ViewportId::ROOT, settings);
                     self.storage.set_windows(&map);
@@ -511,20 +523,11 @@ impl<E: EngineRenderer> Host<E> {
         // `VkSurfaceCapabilitiesKHR::currentExtent` comes back in logical
         // pixels, so the swapchain is created smaller than the window's
         // physical inner size. If we kept using `window.inner_size()` here
-        // the Vulkan viewport would overshoot the framebuffer — content
-        // squeezed into the left half of the screen and the cursor offset
-        // from the visible UI (classic mismatch between rasteriser extent
-        // and framebuffer extent).
+        // the Vulkan viewport would overshoot the framebuffer.
         //
         // `scale_factor` = physical swapchain pixels per egui point.
-        // The compositor divides screen_size by it to get `width_points`
-        // for the vertex shader push constant, and multiplies scissor rects
-        // by it to convert points to pixels. We derive it from the ratio of
-        // swapchain extent (pixels) to egui's viewport rect (points).
-        // viewport_rect() already incorporates zoom_factor via
-        // pixels_per_point, so no extra zoom multiplication is needed.
         let clipped_primitives = self.context.tessellate(shapes, pixels_per_point);
-        let sc_extent = self.compositor.swapchain_extent();
+        let sc_extent = self.root().compositor.swapchain_extent();
         let screen_size = [sc_extent.width, sc_extent.height];
         let egui_screen = self.context.viewport_rect();
         let w_points = egui_screen.width().max(1.0);
@@ -533,14 +536,16 @@ impl<E: EngineRenderer> Host<E> {
         // Peek the compositor signal value; only commit it after the submit
         // succeeds so a failed frame does not strand any engine waiter.
         let signal_value = self.render_target_pool.next_compositor_signal_value();
+        let compositor_timeline = self.render_target_pool.compositor_timeline();
+        let clear_color = self.clear_color;
 
-        let result = self.compositor.render_frame(
+        let result = self.root_mut().compositor.render_frame(
             clipped_primitives,
             textures_delta,
             scale_factor,
             screen_size,
-            self.clear_color,
-            self.render_target_pool.compositor_timeline(),
+            clear_color,
+            compositor_timeline,
             signal_value,
         );
 
@@ -553,13 +558,13 @@ impl<E: EngineRenderer> Host<E> {
             Ok(crate::compositor::FrameOutcome::RenderedNeedsRebuild) => {
                 self.render_target_pool
                     .commit_compositor_signal(signal_value);
-                self.compositor.recreate_swapchain();
+                self.root_mut().compositor.recreate_swapchain();
             }
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 // Acquire failed before submit — no signal was emitted. Do
                 // not commit; the engine's next target will still wait on
                 // the previously-committed value.
-                self.compositor.recreate_swapchain();
+                self.root_mut().compositor.recreate_swapchain();
             }
             Err(e) => {
                 // Generic Vulkan error from submit/present (device loss,
@@ -572,7 +577,7 @@ impl<E: EngineRenderer> Host<E> {
         // ── 10. Request redraw ─────────────────────────────────────────────
         // Always request redraw — the engine is continuously producing frames
         // and the UI needs to stay responsive.
-        self.window.request_redraw();
+        self.root().window.request_redraw();
     }
 
     /// Pending exit code requested by the UI closure via
@@ -600,29 +605,35 @@ impl<E: EngineRenderer> Host<E> {
     /// Must be called once after construction so screen readers see egui
     /// widgets. Without this, `egui-winit/accesskit` compiles but delivers
     /// nothing — the adapter defaults to `None`.
+    ///
+    /// Per B9 decision #6, AccessKit is wired on ROOT only for the alpha.
     #[cfg(feature = "accesskit")]
     pub(crate) fn init_accesskit(
         &mut self,
         event_loop: &egui_winit::winit::event_loop::ActiveEventLoop,
         proxy: egui_winit::winit::event_loop::EventLoopProxy<crate::run::UserEvent>,
     ) {
-        self.egui_winit_state
-            .init_accesskit(event_loop, &self.window, proxy);
+        let root = self.root_mut();
+        root.state.init_accesskit(event_loop, &root.window, proxy);
     }
 
     /// Deliver an AccessKit action request (from winit's user_event channel)
-    /// to the egui-winit state. Actions originated by screen readers — e.g.,
-    /// "click this button", "focus this input" — reach egui widgets this way.
+    /// to the ROOT egui-winit state.
     #[cfg(feature = "accesskit")]
     pub(crate) fn handle_accesskit_event(&mut self, event: &egui_winit::accesskit_winit::Event) {
         use egui_winit::accesskit_winit::WindowEvent;
         if let WindowEvent::ActionRequested(request) = &event.window_event {
-            self.egui_winit_state
+            self.root_mut()
+                .state
                 .on_accesskit_action_request(request.clone());
         }
     }
 
     /// Handle a winit window event. Returns `true` if egui consumed the event.
+    ///
+    /// At this step (§B9 step 3) all events route to ROOT unconditionally.
+    /// Step 4 introduces WindowId-based routing that looks up the target
+    /// Viewport via `window_id_to_viewport`.
     pub(crate) fn handle_window_event(
         &mut self,
         event: &egui_winit::winit::event::WindowEvent,
@@ -639,22 +650,20 @@ impl<E: EngineRenderer> Host<E> {
             WE::Resized(new_size) => {
                 // Skip zero-sized resizes (e.g. minimize on X11/Windows).
                 if new_size.width == 0 || new_size.height == 0 {
-                    return self
-                        .egui_winit_state
-                        .on_window_event(&self.window, event)
-                        .consumed;
+                    let root = self.root_mut();
+                    return root.state.on_window_event(&root.window, event).consumed;
                 }
 
                 let new_extent = vk::Extent2D {
                     width: new_size.width,
                     height: new_size.height,
                 };
-                self.compositor.set_fallback_extent(new_extent);
+                self.root_mut().compositor.set_fallback_extent(new_extent);
 
                 // Only force a rebuild if the swapchain extent actually changed.
                 // On drivers that report currentExtent == u32::MAX the frame
                 // loop won't get ERROR_OUT_OF_DATE_KHR, so we must rebuild here.
-                let current = self.compositor.swapchain_extent();
+                let current = self.root().compositor.swapchain_extent();
                 if current.width != new_extent.width || current.height != new_extent.height {
                     // SAFETY: `recreate_swapchain` internally issues
                     // `device_wait_idle` before destroying any resources, so
@@ -663,7 +672,7 @@ impl<E: EngineRenderer> Host<E> {
                     // destruction. Called from the single-threaded event loop,
                     // so no concurrent submits are in progress.
                     unsafe {
-                        self.compositor.recreate_swapchain();
+                        self.root_mut().compositor.recreate_swapchain();
                     }
                 }
             }
@@ -675,9 +684,10 @@ impl<E: EngineRenderer> Host<E> {
             _ => {}
         }
 
-        let response = self.egui_winit_state.on_window_event(&self.window, event);
+        let root = self.root_mut();
+        let response = root.state.on_window_event(&root.window, event);
         if response.repaint {
-            self.window.request_redraw();
+            root.window.request_redraw();
         }
         response.consumed
     }
@@ -712,7 +722,7 @@ impl<E: EngineRenderer> Host<E> {
         // Creating first prevents the driver from reusing the old timeline semaphore handles,
         // which would cause the validation layer to report spurious signal-value errors on
         // the first engine submit after restart.
-        let extent = self.compositor.swapchain_extent();
+        let extent = self.root().compositor.swapchain_extent();
         let format = vk::Format::B8G8R8A8_UNORM;
         let new_pool = RenderTargetPool::new(
             &self.vulkan.instance,
@@ -725,7 +735,7 @@ impl<E: EngineRenderer> Host<E> {
         self.render_target_pool = new_pool;
 
         // 5. Reset compositor to black.
-        self.compositor.set_engine_viewport_black();
+        self.root_mut().compositor.set_engine_viewport_black();
 
         // 6. Create new channels.
         let (target_tx, target_rx) = mailbox::target_channel();
@@ -791,14 +801,12 @@ impl<E: EngineRenderer> Host<E> {
     pub(crate) unsafe fn destroy(&mut self) {
         // Save persisted state BEFORE tearing down. Both window geometry
         // (from the live winit window) and egui memory (from the context)
-        // need to be captured while their sources are still valid. Any
-        // user-level values written via `Storage::set_value` during the
-        // session are flushed here too.
+        // need to be captured while their sources are still valid.
         #[cfg(feature = "persistence")]
         {
             if self.persistent_windows {
                 let zoom = self.context.zoom_factor();
-                let settings = egui_winit::WindowSettings::from_window(zoom, &self.window);
+                let settings = egui_winit::WindowSettings::from_window(zoom, &self.root().window);
                 let mut map = std::collections::HashMap::new();
                 map.insert(egui::ViewportId::ROOT, settings);
                 self.storage.set_windows(&map);
@@ -826,19 +834,25 @@ impl<E: EngineRenderer> Host<E> {
             let _ = join.join();
         }
 
-        // Wait for GPU idle.
+        // Decision #4: single device_wait_idle up front, then reverse-
+        // insertion-order destroy across all viewports. At this step only
+        // ROOT exists so the loop is trivial; later steps (§B9 step 7)
+        // add non-root entries that must be destroyed before ROOT.
         self.vulkan
             .device
             .device_wait_idle()
             .expect("device_wait_idle failed");
 
-        // Destroy in reverse creation order.
         self.render_target_pool.destroy();
-        self.compositor.destroy();
 
-        // Destroy surface.
-        let surface_loader =
-            ash::khr::surface::Instance::new(&self.vulkan.entry, &self.vulkan.instance);
-        surface_loader.destroy_surface(self.surface, None);
+        // Destroy non-root viewports first, root last.
+        let root = self.viewports.remove(&egui::ViewportId::ROOT);
+        for (_, mut vp) in self.viewports.drain() {
+            vp.destroy(&self.vulkan);
+        }
+        if let Some(mut root) = root {
+            root.destroy(&self.vulkan);
+        }
+        self.window_id_to_viewport.clear();
     }
 }
