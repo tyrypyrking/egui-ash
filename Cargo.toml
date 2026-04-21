@@ -83,3 +83,7 @@ path = "examples/scene_view/main.rs"
 [[example]]
 name = "tiles"
 path = "examples/tiles/main.rs"
+
+[[example]]
+name = "multi_viewports"
+path = "examples/multi_viewports/main.rs"
